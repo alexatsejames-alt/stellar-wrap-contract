@@ -75,6 +75,7 @@ fn setup_fixture_env() -> (Env, Address, Address, BytesN<32>, BytesN<64>, Bytes)
         &archetype,
         &data_hash,
         FIXTURE_PAYLOAD_VERSION,
+        u64::MAX,
     );
 
     let mut buf = [0u8; 512];
@@ -107,6 +108,7 @@ fn test_deterministic_fixture_used_in_contract_mint() {
         &archetype,
         &data_hash,
         FIXTURE_PAYLOAD_VERSION,
+        u64::MAX,
         &signature,
     )
     .is_ok());
@@ -123,6 +125,7 @@ fn test_deterministic_fixture_used_in_contract_mint() {
         &archetype,
         &data_hash,
         &FIXTURE_PAYLOAD_VERSION,
+        &u64::MAX,
         &signature,
     );
     assert!(client.get_wrap(&user, &FIXTURE_PERIOD).is_some());
@@ -131,7 +134,7 @@ fn test_deterministic_fixture_used_in_contract_mint() {
 #[test]
 fn test_fixture_inputs_are_stable() {
     assert_eq!(FIXTURE_PERIOD, 202412);
-    assert_eq!(FIXTURE_PAYLOAD_VERSION, 1);
+    assert_eq!(FIXTURE_PAYLOAD_VERSION, 2);
     assert_ne!(FIXTURE_DATA_HASH, [0u8; 32]);
     assert_eq!(FIXTURE_SECRET_SEED, [0x42; 32]);
 }

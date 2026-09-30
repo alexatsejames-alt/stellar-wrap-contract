@@ -68,4 +68,5 @@ pub enum ContractError {
     // Timelock grace period
     TimelockOperationExpired = 55,
     TimelockOperationNotExpired = 56,
+    SignatureExpired = 57,
 }

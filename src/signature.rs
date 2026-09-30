@@ -24,6 +24,7 @@ pub struct MintPayload {
     pub payload_version: u32,
     pub period: u64,
     pub user: Address,
+    pub valid_until: u64,
 }
 
 /// Construct the canonical mint payload that is signed by the admin.
@@ -39,6 +40,7 @@ pub fn construct_mint_payload(
     archetype: &Symbol,
     data_hash: &BytesN<32>,
     payload_version: u32,
+    valid_until: u64,
 ) -> Bytes {
     let mut payload = Bytes::new(e);
     payload.append(&Bytes::from_array(e, MINT_DOMAIN_SEPARATOR));
@@ -50,6 +52,7 @@ pub fn construct_mint_payload(
         payload_version,
         period,
         user: user.clone(),
+        valid_until,
     };
 
     payload.append(&typed_payload.to_xdr(e));
@@ -118,6 +121,7 @@ pub fn verify_mint_signature(
     archetype: &Symbol,
     data_hash: &BytesN<32>,
     payload_version: u32,
+    valid_until: u64,
     signature: &BytesN<64>,
 ) -> Result<(), ContractError> {
     let payload = construct_mint_payload(
@@ -128,6 +132,7 @@ pub fn verify_mint_signature(
         archetype,
         data_hash,
         payload_version,
+        valid_until,
     );
     verify_ed25519(admin_pubkey, &payload, signature)
 }
@@ -262,6 +267,7 @@ mod tests {
         archetype: &Symbol,
         data_hash: &BytesN<32>,
         payload_version: u32,
+        valid_until: u64,
     ) -> BytesN<64> {
         let payload = construct_mint_payload(
             env,
@@ -271,6 +277,7 @@ mod tests {
             archetype,
             data_hash,
             payload_version,
+            valid_until,
         );
 
         let len = payload.len() as usize;
@@ -289,9 +296,18 @@ mod tests {
         let archetype = symbol_short!("arch");
         let data_hash = BytesN::from_array(&env, &[42u8; 32]);
         let period = 202512u64;
+        let valid_until = 9999999u64;
 
-        let payload =
-            construct_mint_payload(&env, &contract_id, &user, period, &archetype, &data_hash, 1);
+        let payload = construct_mint_payload(
+            &env,
+            &contract_id,
+            &user,
+            period,
+            &archetype,
+            &data_hash,
+            2,
+            valid_until,
+        );
 
         let mut expected = Bytes::new(&env);
         expected.append(&Bytes::from_array(&env, MINT_DOMAIN_SEPARATOR));
@@ -300,9 +316,10 @@ mod tests {
             archetype: archetype.clone(),
             contract_id: contract_id.clone(),
             data_hash: data_hash.clone(),
-            payload_version: 1,
+            payload_version: 2,
             period,
             user: user.clone(),
+            valid_until,
         };
         expected.append(&typed_payload.to_xdr(&env));
 
@@ -317,6 +334,7 @@ mod tests {
         let archetype = symbol_short!("arch");
         let data_hash = BytesN::from_array(&env, &[7u8; 32]);
         let period = 202601u64;
+        let valid_until = u64::MAX;
 
         let signing_key = SigningKey::from_bytes(&[11u8; 32]);
         let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
@@ -328,7 +346,8 @@ mod tests {
             period,
             &archetype,
             &data_hash,
-            1,
+            2,
+            valid_until,
         );
 
         assert!(verify_mint_signature(
@@ -339,7 +358,8 @@ mod tests {
             period,
             &archetype,
             &data_hash,
-            1,
+            2,
+            valid_until,
             &signature,
         )
         .is_ok());
@@ -353,6 +373,7 @@ mod tests {
         let archetype = symbol_short!("arch");
         let data_hash = BytesN::from_array(&env, &[8u8; 32]);
         let period = 202602u64;
+        let valid_until = u64::MAX;
 
         let signing_key = SigningKey::from_bytes(&[12u8; 32]);
         let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
@@ -367,7 +388,8 @@ mod tests {
                 period,
                 &archetype,
                 &data_hash,
-                1,
+                2,
+                valid_until,
                 &invalid_signature,
             )
             .unwrap();
@@ -384,6 +406,7 @@ mod tests {
         let archetype = symbol_short!("arch");
         let data_hash = BytesN::from_array(&env, &[9u8; 32]);
         let period = 202603u64;
+        let valid_until = u64::MAX;
 
         let signing_key = SigningKey::from_bytes(&[13u8; 32]);
         let wrong_signing_key = SigningKey::from_bytes(&[14u8; 32]);
@@ -396,7 +419,8 @@ mod tests {
             period,
             &archetype,
             &data_hash,
-            1,
+            2,
+            valid_until,
         );
 
         let result = catch_unwind(AssertUnwindSafe(|| {
@@ -408,7 +432,8 @@ mod tests {
                 period,
                 &archetype,
                 &data_hash,
-                1,
+                2,
+                valid_until,
                 &wrong_signature,
             )
             .unwrap();
@@ -437,7 +462,7 @@ mod tests {
         let invalid_sig = BytesN::from_array(&env, &[0u8; 64]);
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &invalid_sig);
+            client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &invalid_sig);
         }));
 
         assert!(result.is_err());
@@ -460,6 +485,7 @@ mod tests {
             archetype: archetype.clone(),
             data_hash: data_hash.clone(),
             payload_version: 1,
+            valid_until: u64::MAX,
             signature: BytesN::from_array(&env, &[0u8; 64]),
         };
         let item2 = crate::storage_types::BatchWrapItem {
@@ -468,6 +494,7 @@ mod tests {
             archetype: archetype.clone(),
             data_hash: data_hash.clone(),
             payload_version: 1,
+            valid_until: u64::MAX,
             signature: BytesN::from_array(&env, &[0u8; 64]),
         };
 
@@ -519,6 +546,7 @@ mod tests {
                 archetype: archetype.clone(),
                 data_hash: data_hash.clone(),
                 payload_version: 1,
+                valid_until: u64::MAX,
                 signature: BytesN::from_array(&env, &[0u8; 64]),
             });
         }
@@ -558,6 +586,7 @@ mod tests {
         let archetype = Symbol::new(&env, "abcdefghijklmnopqrstuvwxyzabcdef");
         let data_hash = BytesN::from_array(&env, &[5u8; 32]);
         let period = 202601u64;
+        let valid_until = u64::MAX;
 
         let signing_key = SigningKey::from_bytes(&[88u8; 32]);
         let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
@@ -569,7 +598,8 @@ mod tests {
             period,
             &archetype,
             &data_hash,
-            1,
+            2,
+            valid_until,
         );
 
         assert!(verify_mint_signature(
@@ -580,7 +610,8 @@ mod tests {
             period,
             &archetype,
             &data_hash,
-            1,
+            2,
+            valid_until,
             &signature,
         )
         .is_ok());

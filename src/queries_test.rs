@@ -43,7 +43,7 @@ fn test_has_wrap_agrees_with_get_wrap() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     assert!(client.has_wrap(&user, &period));
     assert_eq!(
@@ -184,7 +184,7 @@ fn test_get_wrap_summary_after_one_mint() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     let summary = client.get_wrap_summary(&user).expect("summary should exist");
     assert_eq!(summary.total_wraps, 1);
@@ -225,7 +225,7 @@ fn test_get_wrap_summary_after_three_mints() {
             &archetypes[i],
             &hash,
         );
-        client.mint_wrap(&user, &periods[i], &archetypes[i], &hash, &1u32, &signature);
+        client.mint_wrap(&user, &periods[i], &archetypes[i], &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
     }
 
     let summary = client.get_wrap_summary(&user).expect("summary should exist");
@@ -266,7 +266,7 @@ fn test_get_wrap_summary_after_revoke() {
             &archetypes[i],
             &hash,
         );
-        client.mint_wrap(&user, &periods[i], &archetypes[i], &hash, &1u32, &signature);
+        client.mint_wrap(&user, &periods[i], &archetypes[i], &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
     }
 
     // Revoke the middle period

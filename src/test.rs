@@ -46,7 +46,7 @@ fn test_minting_flow() {
         &archetype,
         &dummy_hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
     assert_eq!(wrap.data_hash, dummy_hash);
@@ -79,7 +79,7 @@ fn test_mint_emits_event() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     let events = crate::test_utils::decode_events(&env);
     let (topics, data) = events.last().expect("no events found");
@@ -134,8 +134,8 @@ fn test_revoke_emits_event_multi_user() {
         &hash,
     );
 
-    client.mint_wrap(&user_a, &period_a, &archetype_a, &hash, &1u32, &sig_a);
-    client.mint_wrap(&user_b, &period_b, &archetype_b, &hash, &1u32, &sig_b);
+    client.mint_wrap(&user_a, &period_a, &archetype_a, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_a);
+    client.mint_wrap(&user_b, &period_b, &archetype_b, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_b);
     let reason = BytesN::from_array(&env, &[0u8; 32]);
     client.revoke_wrap(&user_a, &period_a, &reason);
 
@@ -210,7 +210,8 @@ fn test_revoke_non_latest_wrap_preserves_latest() {
         &older_period,
         &archetype,
         &older_hash,
-        &1u32,
+        &CURRENT_PAYLOAD_VERSION,
+        &u64::MAX,
         &older_sig,
     );
     client.mint_wrap(
@@ -218,7 +219,8 @@ fn test_revoke_non_latest_wrap_preserves_latest() {
         &newer_period,
         &archetype,
         &newer_hash,
-        &1u32,
+        &CURRENT_PAYLOAD_VERSION,
+        &u64::MAX,
         &newer_sig,
     );
 
@@ -258,9 +260,9 @@ fn test_revoke_latest_recomputes_next_newest_period() {
     let sig2 = sign_payload(&env, &signing_key, &contract_id, &user, 202402, &archetype, &hash2);
     let sig3 = sign_payload(&env, &signing_key, &contract_id, &user, 202403, &archetype, &hash3);
 
-    client.mint_wrap(&user, &202401, &archetype, &hash1, &1u32, &sig1);
-    client.mint_wrap(&user, &202402, &archetype, &hash2, &1u32, &sig2);
-    client.mint_wrap(&user, &202403, &archetype, &hash3, &1u32, &sig3);
+    client.mint_wrap(&user, &202401, &archetype, &hash1, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
+    client.mint_wrap(&user, &202402, &archetype, &hash2, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
+    client.mint_wrap(&user, &202403, &archetype, &hash3, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig3);
 
     // Verify latest is 202403 after all mints
     assert_eq!(client.balance_of(&user), 3);
@@ -308,7 +310,7 @@ fn test_balance_of_and_count() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &202401, &archetype, &hash, &1u32, &sig1);
+    client.mint_wrap(&user, &202401, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
 
     let sig2 = sign_payload(
         &env,
@@ -319,7 +321,7 @@ fn test_balance_of_and_count() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &202402, &archetype, &hash, &1u32, &sig2);
+    client.mint_wrap(&user, &202402, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
 
     assert_eq!(client.balance_of(&user), 2);
 }
@@ -600,8 +602,8 @@ fn test_duplicate_period_fails() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &sig);
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 }
 
 #[test]
@@ -690,7 +692,7 @@ fn test_verify_data_matching_hash() {
         &archetype,
         &data_hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     assert!(client.verify_data(&user, &period, &data_json));
 }
@@ -724,7 +726,7 @@ fn test_verify_data_non_matching_hash() {
         &archetype,
         &data_hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     let tampered_data = Bytes::from_slice(&env, b"{\"score\":999}");
     assert!(!client.verify_data(&user, &period, &tampered_data));
@@ -759,7 +761,7 @@ fn test_verify_data_corrupted_payload() {
         &archetype,
         &data_hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     let corrupted_data = Bytes::from_slice(&env, b"\x00\xFF\xFE\xFDcorrupt\x01\x02");
     assert!(!client.verify_data(&user, &period, &corrupted_data));
@@ -818,6 +820,7 @@ fn test_mint_wrap_rejects_period_tampered_signature() {
             &archetype,
             &data_hash,
             &CURRENT_PAYLOAD_VERSION,
+            &u64::MAX,
             &signature,
         );
     }));
@@ -888,6 +891,7 @@ fn test_mint_wrap_rejects_signature_from_wrong_key() {
             &archetype,
             &data_hash,
             &CURRENT_PAYLOAD_VERSION,
+            &u64::MAX,
             &signature,
         );
     }));
@@ -937,6 +941,7 @@ fn test_mint_rejects_invalid_signature_with_wrong_admin_pubkey() {
             &archetype,
             &data_hash,
             &CURRENT_PAYLOAD_VERSION,
+            &u64::MAX,
             &signature,
         );
     }));
@@ -976,6 +981,7 @@ fn test_get_wrap_existing_user_nonexistent_period() {
         &archetype,
         &hash,
         CURRENT_PAYLOAD_VERSION,
+        u64::MAX,
     );
     client.mint_wrap(
         &user,
@@ -983,6 +989,7 @@ fn test_get_wrap_existing_user_nonexistent_period() {
         &archetype,
         &hash,
         &CURRENT_PAYLOAD_VERSION,
+        &u64::MAX,
         &signature,
     );
 
@@ -1041,9 +1048,9 @@ fn test_get_latest_wrap_returns_most_recent() {
         &hash3,
     );
 
-    client.mint_wrap(&user, &202402, &archetype, &hash1, &1u32, &sig1);
-    client.mint_wrap(&user, &202404, &archetype, &hash2, &1u32, &sig2);
-    client.mint_wrap(&user, &202403, &archetype, &hash3, &1u32, &sig3);
+    client.mint_wrap(&user, &202402, &archetype, &hash1, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
+    client.mint_wrap(&user, &202404, &archetype, &hash2, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
+    client.mint_wrap(&user, &202403, &archetype, &hash3, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig3);
 
     let latest = client.get_latest_wrap(&user).unwrap();
     assert_eq!(latest.period, 202404);
@@ -1091,7 +1098,7 @@ fn test_get_latest_wrap_single_mint() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 
     let latest = client.get_latest_wrap(&user).unwrap();
     assert_eq!(latest.period, 202501);
@@ -1135,8 +1142,8 @@ fn test_valid_period_boundaries() {
         &upper_hash,
     );
 
-    client.mint_wrap(&user, &202401, &archetype, &lower_hash, &1u32, &lower_sig);
-    client.mint_wrap(&user, &210012, &archetype, &upper_hash, &1u32, &upper_sig);
+    client.mint_wrap(&user, &202401, &archetype, &lower_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &lower_sig);
+    client.mint_wrap(&user, &210012, &archetype, &upper_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &upper_sig);
 
     assert!(client.get_wrap(&user, &202401).is_some());
     assert!(client.get_wrap(&user, &210012).is_some());
@@ -1170,7 +1177,7 @@ fn test_invalid_period_zero_fails() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 }
 
 #[test]
@@ -1201,7 +1208,7 @@ fn test_invalid_period_one_fails() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 }
 
 #[test]
@@ -1232,7 +1239,7 @@ fn test_invalid_period_max_fails_without_storage_changes() {
     );
 
     let storage_bytes_before = client.storage_bytes();
-    let result = client.try_mint_wrap(&user, &period, &archetype, &hash, &1u32, &signature);
+    let result = client.try_mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     assert_eq!(
         result.unwrap_err(),
@@ -1293,7 +1300,7 @@ fn test_stress_mint_100_plus_unique_users() {
             &hash,
         );
 
-        client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         cpu_samples[i] = env.cost_estimate().budget().cpu_instruction_cost();
         mem_samples[i] = env.cost_estimate().budget().memory_bytes_cost();
@@ -1360,7 +1367,7 @@ fn test_non_monotonic_period_mints_across_users() {
             &archetype,
             &hash,
         );
-        client.mint_wrap(user, &period, &archetype, &hash, &1u32, &sig);
+        client.mint_wrap(user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
     };
 
     // Interleaved, non-monotonic ordering across both users:
@@ -1412,7 +1419,7 @@ fn test_mint_wrap_before_init_fails() {
     let archetype = symbol_short!("arch");
     let sig = BytesN::from_array(&env, &[0u8; 64]);
 
-    client.mint_wrap(&user, &202401, &archetype, &hash, &1u32, &sig);
+    client.mint_wrap(&user, &202401, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 }
 
 #[test]
@@ -1512,7 +1519,7 @@ fn test_get_mint_timestamp_exists() {
         &archetype,
         &dummy_hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
     assert_eq!(
@@ -1565,7 +1572,7 @@ fn test_burn_wrap_removes_wrap_from_storage() {
     );
 
     // Mint a wrap
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &signature);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
     assert!(client.get_wrap(&user, &period).is_some());
 
     // Burn the wrap
@@ -1614,8 +1621,8 @@ fn test_burn_wrap_decrements_count() {
     );
 
     // Mint two wraps
-    client.mint_wrap(&user, &period1, &archetype, &hash, &1u32, &sig1);
-    client.mint_wrap(&user, &period2, &archetype, &hash, &1u32, &sig2);
+    client.mint_wrap(&user, &period1, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
+    client.mint_wrap(&user, &period2, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
     assert_eq!(client.balance_of(&user), 2);
 
     // Burn one wrap
@@ -1659,7 +1666,7 @@ fn test_burn_wrap_requires_owner_auth() {
     );
 
     // User A mints a wrap
-    client.mint_wrap(&user_a, &period, &archetype, &hash, &1u32, &sig);
+    client.mint_wrap(&user_a, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 
     // User B tries to burn User A's wrap — should fail
     client.burn_wrap(&user_b, &period);
@@ -1710,7 +1717,7 @@ fn test_burn_wrap_emits_burn_event() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 
     // Clear events from mint
     env.events().all();
@@ -1761,7 +1768,7 @@ fn test_burn_wrap_owner_cannot_access_after() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
     let record_before = client.get_wrap(&user, &period).unwrap();
     assert_eq!(record_before.data_hash, hash);
 
@@ -1815,8 +1822,8 @@ fn test_burn_wrap_only_deletes_target() {
     );
 
     // Mint two wraps
-    client.mint_wrap(&user, &period_a, &archetype, &hash, &1u32, &sig_a);
-    client.mint_wrap(&user, &period_b, &archetype, &hash, &1u32, &sig_b);
+    client.mint_wrap(&user, &period_a, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_a);
+    client.mint_wrap(&user, &period_b, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_b);
 
     // Burn wrap A
     client.burn_wrap(&user, &period_a);
@@ -1866,8 +1873,8 @@ fn test_burn_wrap_clears_latest_period() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period1, &archetype, &hash, &1u32, &sig1);
-    client.mint_wrap(&user, &period2, &archetype, &hash, &1u32, &sig2);
+    client.mint_wrap(&user, &period1, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
+    client.mint_wrap(&user, &period2, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
 
     // Latest wrap should be period2
     let latest_before = client.get_latest_wrap(&user).unwrap();
@@ -1920,8 +1927,8 @@ fn test_burn_wrap_multiple_users_independent() {
     );
 
     // Both users mint for the same period
-    client.mint_wrap(&user_a, &period, &archetype, &hash, &1u32, &sig_a);
-    client.mint_wrap(&user_b, &period, &archetype, &hash, &1u32, &sig_b);
+    client.mint_wrap(&user_a, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_a);
+    client.mint_wrap(&user_b, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_b);
 
     // Burn user A's wrap
     client.burn_wrap(&user_a, &period);
@@ -1983,8 +1990,8 @@ fn test_burn_then_transfer_remaining_wrap_succeeds() {
         &hash2,
     );
 
-    client.mint_wrap(&user, &period1, &archetype, &hash1, &1u32, &sig1);
-    client.mint_wrap(&user, &period2, &archetype, &hash2, &1u32, &sig2);
+    client.mint_wrap(&user, &period1, &archetype, &hash1, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
+    client.mint_wrap(&user, &period2, &archetype, &hash2, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
 
     // Burn period1 — WrapPeriods must be updated so transfer of period2 works
     client.burn_wrap(&user, &period1);
@@ -2042,7 +2049,7 @@ fn test_wrap_count_equals_wrap_periods_len_after_mint_burn_transfer() {
             &archetype,
             &hash,
         );
-        client.mint_wrap(&user, &periods[i], &archetype, &hash, &1u32, &sig);
+        client.mint_wrap(&user, &periods[i], &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
     }
     assert_eq!(client.balance_of(&user), 4);
 
@@ -2097,7 +2104,7 @@ fn test_index_invariants_across_mint_batch_and_bridge_in() {
         &archetype,
         &hash1,
     );
-    client.mint_wrap(&user, &202401, &archetype, &hash1, &1u32, &sig1);
+    client.mint_wrap(&user, &202401, &archetype, &hash1, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
 
     assert_eq!(client.balance_of(&user), 1);
     assert_eq!(client.total_wrap_count(), 1);
@@ -2134,7 +2141,8 @@ fn test_index_invariants_across_mint_batch_and_bridge_in() {
         period: 202402,
         archetype: archetype.clone(),
         data_hash: hash2.clone(),
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: sig2,
     });
     batch.push_back(crate::storage_types::BatchWrapItem {
@@ -2142,7 +2150,8 @@ fn test_index_invariants_across_mint_batch_and_bridge_in() {
         period: 202403,
         archetype: archetype.clone(),
         data_hash: hash3.clone(),
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: sig3,
     });
     client.mint_wrap_batch(&batch, &None);
@@ -2231,7 +2240,8 @@ fn test_mint_wrap_batch_rejects_opted_out_user() {
         period: 202401,
         archetype,
         data_hash: hash,
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: sig,
     });
 
@@ -2265,7 +2275,7 @@ fn test_mint_wrap_batch_legacy_index_invariant_guard() {
         &archetype,
         &hash1,
     );
-    client.mint_wrap(&user, &202401, &archetype, &hash1, &1u32, &sig1);
+    client.mint_wrap(&user, &202401, &archetype, &hash1, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
 
     // Simulate legacy state by removing WrapPeriods
     env.as_contract(&contract_id, || {
@@ -2291,7 +2301,8 @@ fn test_mint_wrap_batch_legacy_index_invariant_guard() {
         period: 202402,
         archetype,
         data_hash: hash2,
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: sig2,
     });
 
@@ -2349,9 +2360,9 @@ fn test_get_all_wraps_for_user_returns_all_wraps() {
         &hash3,
     );
 
-    client.mint_wrap(&user, &202401, &archetype, &hash1, &1u32, &sig1);
-    client.mint_wrap(&user, &202402, &archetype, &hash2, &1u32, &sig2);
-    client.mint_wrap(&user, &202403, &archetype, &hash3, &1u32, &sig3);
+    client.mint_wrap(&user, &202401, &archetype, &hash1, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
+    client.mint_wrap(&user, &202402, &archetype, &hash2, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
+    client.mint_wrap(&user, &202403, &archetype, &hash3, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig3);
 
     let all_wraps = client.get_all_wraps_for_user(&user);
     assert_eq!(all_wraps.len(), 3);
@@ -2404,7 +2415,7 @@ fn test_get_all_wraps_for_user_single_wrap() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 
     let all_wraps = client.get_all_wraps_for_user(&user);
     assert_eq!(all_wraps.len(), 1);
@@ -2460,9 +2471,9 @@ fn test_get_all_wraps_for_user_independent_per_user() {
         &hash,
     );
 
-    client.mint_wrap(&user_a, &202401, &archetype, &hash, &1u32, &sig_a1);
-    client.mint_wrap(&user_a, &202402, &archetype, &hash, &1u32, &sig_a2);
-    client.mint_wrap(&user_b, &202401, &archetype, &hash, &1u32, &sig_b1);
+    client.mint_wrap(&user_a, &202401, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_a1);
+    client.mint_wrap(&user_a, &202402, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_a2);
+    client.mint_wrap(&user_b, &202401, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig_b1);
 
     let wraps_a = client.get_all_wraps_for_user(&user_a);
     let wraps_b = client.get_all_wraps_for_user(&user_b);
@@ -2534,7 +2545,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Verify that passing the exact same correct payload returns true
         let result = client.verify_data(&user, &period, &correct_payload);
@@ -2571,7 +2582,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Verify the exact same complex payload succeeds
         let result = client.verify_data(&user, &period, &complex_payload);
@@ -2603,7 +2614,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Try to verify with a tampered/different payload
         let incorrect_payload = Bytes::from_slice(&env, b"{\"score\":999,\"rank\":\"platinum\"}");
@@ -2638,7 +2649,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Verify that the minimal payload works correctly
         let result = client.verify_data(&user, &period, &minimal_payload);
@@ -2672,7 +2683,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Call verify_data multiple times with the same payload
         let result1 = client.verify_data(&user, &period, &payload);
@@ -2724,8 +2735,8 @@ mod verify_data_unit_tests {
             &hash2,
         );
 
-        client.mint_wrap(&user, &period1, &archetype, &hash1, &1u32, &sig1);
-        client.mint_wrap(&user, &period2, &archetype, &hash2, &1u32, &sig2);
+        client.mint_wrap(&user, &period1, &archetype, &hash1, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
+        client.mint_wrap(&user, &period2, &archetype, &hash2, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
 
         // Verify correct payload for each period
         assert!(
@@ -2771,7 +2782,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Verify that the exact binary payload matches
         let result = client.verify_data(&user, &period, &binary_payload);
@@ -2800,7 +2811,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Try with one byte changed (0x02 -> 0x03 at index 2)
         let tampered_binary = Bytes::from_slice(&env, b"\x00\x01\x03\x03\x04");
@@ -2839,7 +2850,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Verify the large payload matches
         let result = client.verify_data(&user, &period, &large_payload);
@@ -2885,7 +2896,7 @@ mod verify_data_unit_tests {
             &archetype,
             &data_hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &signature);
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &signature);
 
         // Reset the cost trackers so the budget below reflects only `verify_data`.
         env.cost_estimate().budget().reset_tracker();
@@ -2968,6 +2979,7 @@ fn test_get_latest_wrap_multiple_wraps() {
         &archetype,
         &hash1,
         CURRENT_PAYLOAD_VERSION,
+        u64::MAX,
     );
     let sig2 = sign_payload_versioned(
         &env,
@@ -2978,6 +2990,7 @@ fn test_get_latest_wrap_multiple_wraps() {
         &archetype,
         &hash2,
         CURRENT_PAYLOAD_VERSION,
+        u64::MAX,
     );
     let sig3 = sign_payload_versioned(
         &env,
@@ -2988,6 +3001,7 @@ fn test_get_latest_wrap_multiple_wraps() {
         &archetype,
         &hash3,
         CURRENT_PAYLOAD_VERSION,
+        u64::MAX,
     );
 
     client.mint_wrap(
@@ -2996,6 +3010,7 @@ fn test_get_latest_wrap_multiple_wraps() {
         &archetype,
         &hash1,
         &CURRENT_PAYLOAD_VERSION,
+        &u64::MAX,
         &sig1,
     );
     let latest1 = client.get_latest_wrap(&user).unwrap();
@@ -3008,6 +3023,7 @@ fn test_get_latest_wrap_multiple_wraps() {
         &archetype,
         &hash2,
         &CURRENT_PAYLOAD_VERSION,
+        &u64::MAX,
         &sig2,
     );
     let latest2 = client.get_latest_wrap(&user).unwrap();
@@ -3020,6 +3036,7 @@ fn test_get_latest_wrap_multiple_wraps() {
         &archetype,
         &hash3,
         &CURRENT_PAYLOAD_VERSION,
+        &u64::MAX,
         &sig3,
     );
     let latest3 = client.get_latest_wrap(&user).unwrap();
@@ -3244,7 +3261,8 @@ fn make_batch_item(
         period,
         archetype: archetype.clone(),
         data_hash: data_hash.clone(),
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: sig,
     }
 }
@@ -3315,7 +3333,8 @@ fn test_mint_wrap_batch_max_size_succeeds() {
             period,
             archetype: archetype.clone(),
             data_hash,
-            payload_version: 1,
+            payload_version: CURRENT_PAYLOAD_VERSION,
+            valid_until: u64::MAX,
             signature: dummy_sig.clone(),
         });
     }
@@ -3357,7 +3376,8 @@ fn test_mint_wrap_batch_over_max_size_fails_before_signatures() {
             period,
             archetype: archetype.clone(),
             data_hash,
-            payload_version: 1,
+            payload_version: CURRENT_PAYLOAD_VERSION,
+            valid_until: u64::MAX,
             signature: dummy_sig.clone(),
         });
     }
@@ -3516,7 +3536,8 @@ fn test_batch_aggregated_sig_rejects_opted_out_user() {
         period: period_a,
         archetype: archetype.clone(),
         data_hash: hash.clone(),
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: dummy_sig.clone(),
     };
     let item_b = crate::storage_types::BatchWrapItem {
@@ -3524,7 +3545,8 @@ fn test_batch_aggregated_sig_rejects_opted_out_user() {
         period: period_b,
         archetype: archetype.clone(),
         data_hash: hash.clone(),
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: dummy_sig,
     };
 
@@ -3568,7 +3590,8 @@ fn test_batch_aggregated_sig_opted_out_leaves_no_partial_state() {
         period: period_a,
         archetype: archetype.clone(),
         data_hash: hash.clone(),
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: dummy_sig.clone(),
     };
     let item_b = crate::storage_types::BatchWrapItem {
@@ -3576,7 +3599,8 @@ fn test_batch_aggregated_sig_opted_out_leaves_no_partial_state() {
         period: period_b,
         archetype: archetype.clone(),
         data_hash: hash.clone(),
-        payload_version: 1,
+        payload_version: CURRENT_PAYLOAD_VERSION,
+        valid_until: u64::MAX,
         signature: dummy_sig,
     };
 
@@ -3646,7 +3670,7 @@ fn test_total_revoked_increments_correctly() {
             &archetype,
             &hash,
         );
-        client.mint_wrap(&user, &period, &archetype, &hash, &1u32, &sig);
+        client.mint_wrap(&user, &period, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
     }
 
     assert_eq!(client.total_revoked(), 0);
@@ -3713,8 +3737,8 @@ fn test_revoke_then_transfer_succeeds() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period1, &archetype, &hash, &1u32, &sig1);
-    client.mint_wrap(&user, &period2, &archetype, &hash, &1u32, &sig2);
+    client.mint_wrap(&user, &period1, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig1);
+    client.mint_wrap(&user, &period2, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig2);
 
     // Revoke period1 — WrapPeriods and UserPeriods must be updated.
     client.revoke_wrap(&user, &period1, &reason);
@@ -3761,7 +3785,7 @@ fn test_revoke_keeps_index_invariant() {
             &archetype,
             &hash,
         );
-        client.mint_wrap(&user, &p, &archetype, &hash, &1u32, &sig);
+        client.mint_wrap(&user, &p, &archetype, &hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
     }
     assert_eq!(client.balance_of(&user), 3);
 
@@ -4056,7 +4080,7 @@ fn test_mint_wrap_invalid_period_year() {
     let invalid_period = 202312u64; // year 2023 < 2024
 
     let sig = BytesN::from_array(&env, &[0u8; 64]);
-    client.mint_wrap(&user, &invalid_period, &archetype, &data_hash, &1u32, &sig);
+    client.mint_wrap(&user, &invalid_period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 }
 
 #[test]
@@ -4079,5 +4103,5 @@ fn test_mint_wrap_invalid_period_month() {
     let invalid_period = 202413u64; // month 13 > 12
 
     let sig = BytesN::from_array(&env, &[0u8; 64]);
-    client.mint_wrap(&user, &invalid_period, &archetype, &data_hash, &1u32, &sig);
+    client.mint_wrap(&user, &invalid_period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 }
