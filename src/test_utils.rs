@@ -47,8 +47,6 @@ pub(crate) fn sign_payload_versioned(
         payload_version,
     );
     let len = payload.len() as usize;
-
-    let len = payload.len() as usize;
     let mut out = vec![0u8; len];
     payload.copy_into_slice(&mut out);
 
@@ -134,23 +132,11 @@ mod get_wraps_tests {
         env.invoke_contract::<()>(
             contract,
             "mint_wrap",
-            (
-                user.clone(),
-                period,
-                archetype.clone(),
-                data_hash.clone(),
-                signature,
-            ),
+            (user.clone(), period, archetype.clone(), data_hash.clone(), signature),
         );
     }
 
-    fn get_wraps(
-        env: &Env,
-        contract: &Address,
-        user: &Address,
-        start: u32,
-        limit: u32,
-    ) -> Vec<u64> {
+    fn get_wraps(env: &Env, contract: &Address, user: &Address, start: u32, limit: u32) -> Vec<u64> {
         env.invoke_contract(contract, "get_wraps", (user.clone(), start, limit))
     }
 

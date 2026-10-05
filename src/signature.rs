@@ -5,7 +5,6 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use soroban_sdk::{contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, Symbol};
 
 use crate::ContractError;
-use alloc::vec;
 
 /// Domain separator used for mint signatures.
 ///
@@ -405,6 +404,37 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_mint_signature_rejects_invalid_signature() {
+        let env = Env::default();
+        let contract_id = env.register(StellarWrapContract, ());
+        let user = Address::generate(&env);
+        let archetype = symbol_short!("arch");
+        let data_hash = BytesN::from_array(&env, &[8u8; 32]);
+        let period = 202602u64;
+
+        let signing_key = SigningKey::from_bytes(&[12u8; 32]);
+        let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+        let invalid_signature = BytesN::from_array(&env, &[0u8; 64]);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            verify_mint_signature(
+                &env,
+                &admin_pubkey,
+                &contract_id,
+                &user,
+                period,
+                &archetype,
+                &data_hash,
+                1,
+                &invalid_signature,
+            )
+            .unwrap();
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_verify_mint_signature_rejects_unsupported_version() {
         let env = Env::default();
         let contract_id = env.register(StellarWrapContract, ());
@@ -476,6 +506,32 @@ mod tests {
     }
 
     #[test]
+    fn test_mint_wrap_rejects_invalid_signature_length() {
+        let env = Env::default();
+        let contract_id = env.register(StellarWrapContract, ());
+        let client = StellarWrapContractClient::new(&env, &contract_id);
+
+        let signing_key = SigningKey::from_bytes(&[99u8; 32]);
+        let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&admin, &admin_pubkey);
+
+        let data_hash = BytesN::from_array(&env, &[42u8; 32]);
+        let archetype = symbol_short!("arch");
+        let period = 202512u64;
+        let invalid_sig = BytesN::from_array(&env, &[0u8; 64]);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            client.mint_wrap(&user, &period, &archetype, &data_hash, &1u32, &invalid_sig);
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_verify_batch_aggregated_signature_success() {
         let env = Env::default();
         let contract_id = env.register(StellarWrapContract, ());
@@ -507,6 +563,87 @@ mod tests {
             &admin_pubkey,
             &contract_id,
             &items,
+            1,
+            &signature,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_verify_batch_max_size_does_not_panic() {
+        let env = Env::default();
+        let contract_id = env.register(StellarWrapContract, ());
+        let signing_key = SigningKey::from_bytes(&[77u8; 32]);
+        let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+        let data_hash = BytesN::from_array(&env, &[3u8; 32]);
+        let archetype = symbol_short!("arch");
+
+        let mut items = soroban_sdk::Vec::new(&env);
+        for i in 0..crate::mint::MAX_BATCH_SIZE {
+            let user = Address::generate(&env);
+            let period = 202601u64 + (i as u64 % 12);
+            items.push_back(crate::storage_types::BatchWrapItem {
+                user,
+                period,
+                archetype: archetype.clone(),
+                data_hash: data_hash.clone(),
+                payload_version: 1,
+                signature: BytesN::from_array(&env, &[0u8; 64]),
+            });
+        }
+
+        let payload = construct_batch_mint_payload(&env, &contract_id, &items, 1);
+        let len = payload.len() as usize;
+        assert!(
+            len > 512,
+            "batch payload should exceed old buffer: {len} bytes"
+        );
+
+        let mut out = vec![0u8; len];
+        payload.copy_into_slice(&mut out);
+        let agg_sig = BytesN::from_array(&env, &signing_key.sign(&out).to_bytes());
+
+        assert!(verify_batch_aggregated_signature(
+            &env,
+            &admin_pubkey,
+            &contract_id,
+            &items,
+            1,
+            &agg_sig,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_verify_mint_max_archetype_does_not_panic() {
+        let env = Env::default();
+        let contract_id = env.register(StellarWrapContract, ());
+        let user = Address::generate(&env);
+        let archetype = Symbol::new(&env, "abcdefghijklmnopqrstuvwxyzabcdef");
+        let data_hash = BytesN::from_array(&env, &[5u8; 32]);
+        let period = 202601u64;
+
+        let signing_key = SigningKey::from_bytes(&[88u8; 32]);
+        let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+        let signature = sign_payload(
+            &env,
+            &signing_key,
+            &contract_id,
+            &user,
+            period,
+            &archetype,
+            &data_hash,
+            1,
+        );
+
+        assert!(verify_mint_signature(
+            &env,
+            &admin_pubkey,
+            &contract_id,
+            &user,
+            period,
+            &archetype,
+            &data_hash,
             1,
             &signature,
         )

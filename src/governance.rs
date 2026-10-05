@@ -6,13 +6,13 @@ use crate::{
 };
 
 /// Minimum duration for an admin proposal (1 hour).
-pub(crate) const MIN_PROPOSAL_DURATION: u64 = 60 * 60;
+pub const MIN_PROPOSAL_DURATION: u64 = 60 * 60;
 /// Maximum duration for an admin proposal (30 days).
-pub(crate) const MAX_PROPOSAL_DURATION: u64 = 30 * 24 * 60 * 60;
+pub const MAX_PROPOSAL_DURATION: u64 = 30 * 24 * 60 * 60;
 
 /// Create a new proposal to update the contract admin.
 /// Returns the generated proposal ID.
-#[allow(deprecated)] // TODO(#718): migrate to #contractevent
+#[allow(deprecated)] // TODO(#718): migrate to #[contractevent]
 pub(crate) fn create_admin_proposal(
     e: Env,
     proposer: Address,
@@ -24,7 +24,7 @@ pub(crate) fn create_admin_proposal(
     if duration_seconds < MIN_PROPOSAL_DURATION || duration_seconds > MAX_PROPOSAL_DURATION {
         panic_with_error!(e, ContractError::InvalidProposalDuration);
     }
-
+    
     let count: u64 = e
         .storage()
         .instance()
@@ -64,6 +64,7 @@ pub(crate) fn create_admin_proposal(
     );
 
     proposal_id
+
 }
 
 /// Cast a vote on an active governance proposal.

@@ -41,7 +41,9 @@
 
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env};
 
-use crate::{ttl::TTL_TEMP, ContractError, DataKey, TransferFeeConfig};
+use crate::{
+    ttl::TTL_TEMP, ContractError, DataKey, TransferFeeConfig, WrapRecord,
+};
 
 /// Minimum duration for an admin proposal, in seconds (1 hour).
 pub(crate) const MIN_PROPOSAL_DURATION: u64 = 60 * 60;

@@ -1,16 +1,16 @@
 //! Shared operational constants for the Stellar Wrap Contract.
 //!
-// All time-to-live (TVL) values used for Soroban storage extensions are
-// defined here to ensure a single source of truth across the crate.
+//! All time-to-live (TTL) values used for Soroban storage extensions are
+//! defined here to ensure a single source of truth across the crate.
 
 /// Persistent-storage TTL representing approximately one calendar year.
 ///
-/// # Ledger-time arithmetics
+/// # Ledger-time arithmetic
 ///
 /// Stellar ledgers close every **5 seconds**.  At that cadence:
 ///
-///   - 1 day   = 86 400 s ç 5 s/ledger  = 17 280 ledgers
-///   - 1 year  ≈ 17 280°× 365           = 6 307 200 ledgers
+///   - 1 day   = 86 400 s ÷ 5 s/ledger  = 17 280 ledgers
+///   - 1 year  ≈ 17 280 × 365           = 6 307 200 ledgers
 ///
 /// # Policy rationale
 ///
@@ -19,6 +19,12 @@
 /// that are refreshed on every user mutation (wrap count, latest period)
 /// effectively never expire for active participants.
 pub(crate) const TTL_ONE_YEAR: u32 = 17_280 * 365;
+
+/// Maximum number of timelock operations that may be queued at once.
+///
+/// Guards the `TimelockOps` index vector against unbounded growth (see
+/// `timelock::schedule` and `timelock::MAX_PENDING_OPERATIONS`).
+pub(crate) const MAX_PENDING_OPERATIONS: u32 = 10;
 
 /// Persistent-storage TTL representing approximately one calendar day.
 ///
@@ -30,7 +36,7 @@ pub(crate) const TTL_TEMP: u32 = 17_280;
 
 /// Domain separator for merkle leaves: all leaf preimages are prefixed with
 /// 0x00 before hashing.
-//.
+///
 /// This prevents a second-preimage attack where a 64-byte internal node
 /// preimage (two 32-byte hashes) could be interpreted as a leaf preimage.
 pub(crate) const MERKLE_LEAF_PREFIX: u8 = 0x00;

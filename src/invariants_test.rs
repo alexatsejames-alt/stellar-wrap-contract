@@ -117,14 +117,14 @@ fn test_post_bridge_in_invariants() {
     // Allow bridge in
     let archetype = Symbol::new(&env, "arch");
     let data_hash = BytesN::from_array(&env, &[0; 32]);
-
+    
     // The admin must be relayer or mock auth handles it
     client.set_bridge_relayer(&admin);
-
+    
     client.bridge_wrap_in(&1, &1, &user, &202402, &archetype, &data_hash);
 
     let report = client.check_user_invariants(&user);
-    assert!(report.wrap_count_matches_user_periods);
+    assert!(report.wrap_count_match_user_periods);
     assert!(report.wrap_count_matches_wrap_periods);
     assert!(report.latest_period_matches_max);
     assert!(report.all_user_periods_live);

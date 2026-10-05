@@ -50,7 +50,7 @@ pub(crate) fn get_fee_params(e: &Env) -> FeeParams {
             base_fee: 0,
             per_kib_fee: 0,
             scale_step_kib: 1,
-            max_fee: 0,
+            max_fee: i128::MAX,
         })
 }
 
@@ -66,7 +66,7 @@ pub(crate) fn set_fee_params(e: &Env, params: FeeParams) {
         panic_with_error!(e, ContractError::InvalidFeeParams);
     }
     e.storage().instance().set(&DataKey::FeeParams, &params);
-    crate::events::publish_event(e, crate::events::Event::FeeParamsUpdated { params });
+    crate::events::publish_event(e, crate::events::Event::FeeParamsUpdated(params));
 }
 
 pub(crate) fn compute_current_fee(e: &Env) -> i128 {
