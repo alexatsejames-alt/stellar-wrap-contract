@@ -133,7 +133,7 @@ fn test_bridge_wrap_out_success() {
     assert_eq!(request.data_hash, data_hash);
 
     let wrap = client.get_wrap(&user, &period).expect("wrap exists");
-    assert_eq!(wrap.fsm.state, WrapState::Pending);
+    assert_eq!(wrap.lifecycle.state, WrapState::Pending);
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn test_bridge_wrap_in_success() {
     assert_eq!(record.data_hash, data_hash);
 
     let wrap = client.get_wrap(&recipient, &period).expect("wrap exists");
-    assert_eq!(wrap.fsm.state, WrapState::Active);
+    assert_eq!(wrap.lifecycle.state, WrapState::Active);
 }
 
 #[test]
@@ -349,7 +349,14 @@ fn test_mint_wrap_and_bridge_wrap_in_period_validation_parity() {
 
         let nonce = period; // unique per iteration
         let bridge_result = catch_unwind(AssertUnwindSafe(|| {
-            client.bridge_wrap_in(&chain_id, &nonce, &bridge_user, &period, &archetype, &data_hash);
+            client.bridge_wrap_in(
+                &chain_id,
+                &nonce,
+                &bridge_user,
+                &period,
+                &archetype,
+                &data_hash,
+            );
         }));
 
         if is_valid {

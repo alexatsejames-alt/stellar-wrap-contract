@@ -171,15 +171,6 @@ fn test_pause_blocks_all_require_not_paused_entrypoints() {
         "bridge_wrap_out must be blocked while paused"
     );
 
-    // ── bridge_wrap_refund ──────────────────────────────────────────────
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        client.bridge_wrap_refund(&0);
-    }));
-    assert!(
-        result.is_err(),
-        "bridge_wrap_refund must be blocked while paused"
-    );
-
     // ── bridge_wrap_in ──────────────────────────────────────────────────
     let sig_in = sign_inbound_payload(
         &env,
@@ -258,6 +249,28 @@ fn test_pause_allows_documented_entrypoints() {
     );
     client.mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &u64::MAX, &sig);
 
+    // Prepare a wrap that is bridged out, so we can test refund while paused
+    let bridge_period = 202609u64;
+    let bridge_sig = sign_mint_payload(
+        &env,
+        &signing_key,
+        &client.address,
+        &user,
+        bridge_period,
+        &archetype,
+        &data_hash,
+    );
+    client.mint_wrap(&user, &bridge_period, &archetype, &data_hash, &1, &bridge_sig);
+    
+    let chain_2 = 2u32;
+    client.set_chain_status(&chain_2, &true);
+    let mut relayers2 = soroban_sdk::Vec::new(&env);
+    relayers2.push_back(BytesN::from_array(&env, &[9u8; 32]));
+    client.set_bridge_relayers(&chain_2, &relayers2, &1);
+
+    let recipient_bytes = Bytes::from_array(&env, b"recipient");
+    let outbound_nonce = client.bridge_wrap_out(&user, &chain_2, &recipient_bytes, &bridge_period);
+
     client.pause();
 
     // ── Entrypoints intentionally allowed while paused ──────────────────
@@ -291,6 +304,7 @@ fn test_pause_allows_documented_entrypoints() {
     // - create_admin_proposal / vote_admin_proposal / execute_admin_proposal /
     //   cancel_admin_proposal: DAO governance; must remain available.
     // - set_stake_config: Admin staking configuration.
+    // - bridge_wrap_refund: Relayer refund; users should not be trapped during a pause.
     // ─────────────────────────────────────────────────────────────────────
 
     // burn_wrap — user burn should still work while paused
@@ -316,6 +330,11 @@ fn test_pause_allows_documented_entrypoints() {
     );
     client.burn_wrap(&burn_user, &burn_period);
     assert!(client.get_wrap(&burn_user, &burn_period).is_none());
+
+    // bridge_wrap_refund — user refund should still work while paused
+    client.bridge_wrap_refund(&outbound_nonce);
+    let refunded_wrap = client.get_wrap(&user, &bridge_period).unwrap();
+    assert_eq!(refunded_wrap.fsm.state, WrapState::Active);
 
     // set_alias_hash — user preference
     let alias_user = Address::generate(&env);
@@ -350,11 +369,11 @@ fn test_pause_allows_documented_entrypoints() {
     client.enable_timelock(&3600);
 
     // set_bridge_relayers — admin bridge config
-    let chain_2 = 2u32;
-    client.set_chain_status(&chain_2, &true);
-    let mut relayers2 = soroban_sdk::Vec::new(&env);
-    relayers2.push_back(BytesN::from_array(&env, &[9u8; 32]));
-    client.set_bridge_relayers(&chain_2, &relayers2, &1);
+    let chain_3 = 3u32;
+    client.set_chain_status(&chain_3, &true);
+    let mut relayers3 = soroban_sdk::Vec::new(&env);
+    relayers3.push_back(BytesN::from_array(&env, &[9u8; 32]));
+    client.set_bridge_relayers(&chain_3, &relayers3, &1);
 
     // set_stake_config — admin staking config
     client.set_stake_config(&StakeConfig {

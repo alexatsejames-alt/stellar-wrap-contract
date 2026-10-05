@@ -6,6 +6,145 @@ import { backfillEvents } from './backfill';
 import { reconcile } from './reconciler';
 import type { DerivedState } from './types';
 
+/**
+ * Per-counter tolerance thresholds for reconciliation.
+ *
+ * `total_wraps` is the canonical, monotonic counter and must match on-chain
+ * state exactly — any deviation is a genuine divergence (a bug), not noise.
+ * Other counters are allowed a small slack to absorb indexer lag.
+ */
+const RECONCILE_TOLERANCE: Record<string, number> = {
+  total_wraps: 0,
+};
+
+/**
+ * Counters whose drift is expected while the indexer is still catching up to
+ * the chain head. Drift here is reported as lag, not as a failure.
+ */
+const LAG_TOLERANT_COUNTERS = new Set<string>(['total_unwraps', 'total_transfers']);
+
+interface CounterDrift {
+  counter: string;
+  indexed: number;
+  onchain: number;
+  delta: number;
+  tolerance: number;
+  kind: 'divergence' | 'lag';
+}
+
+interface ReconciliationRun {
+  ran_at: string;
+  contract_id: string;
+  indexed_ledger: number;
+  chain_head_ledger: number;
+  is_consistent: boolean;
+  has_divergence: boolean;
+  drifts: CounterDrift[];
+}
+
+/**
+ * Compare indexed vs on-chain counters, applying per-counter tolerances and
+ * classifying each drift as either indexer lag or genuine divergence.
+ */
+function analyzeDrift(
+  report: Awaited<ReturnType<typeof reconcile>>,
+  indexedLedger: number,
+  chainHeadLedger: number,
+): CounterDrift[] {
+  const drifts: CounterDrift[] = [];
+  const indexed = report.indexed as unknown as Record<string, number>;
+  const onchain = report.onchain as unknown as Record<string, number>;
+
+  for (const counter of Object.keys(onchain)) {
+    const indexedValue = indexed[counter] ?? 0;
+    const onchainValue = onchain[counter] ?? 0;
+    const delta = onchainValue - indexedValue;
+    const tolerance = RECONCILE_TOLERANCE[counter] ?? 0;
+
+    if (Math.abs(delta) <= tolerance) {
+      continue;
+    }
+
+    // A positive delta (chain ahead of index) on a lag-tolerant counter while
+    // the indexer has not yet reached the chain head is expected lag, not a bug.
+    const isLag =
+      delta > 0 &&
+      LAG_TOLERANT_COUNTERS.has(counter) &&
+      indexedLedger < chainHeadLedger;
+
+    drifts.push({
+      counter,
+      indexed: indexedValue,
+      onchain: onchainValue,
+      delta,
+      tolerance,
+      kind: isLag ? 'lag' : 'divergence',
+    });
+  }
+
+  return drifts;
+}
+
+/**
+ * Persist a reconciliation run and its outcome so drift appearing between two
+ * runs can be bisected to a ledger range.
+ */
+function recordReconciliationRun(db: IndexerDB, run: ReconciliationRun): void {
+  try {
+    db.recordReconciliation({
+      ran_at: run.ran_at,
+      contract_id: run.contract_id,
+      indexed_ledger: run.indexed_ledger,
+      chain_head_ledger: run.chain_head_ledger,
+      is_consistent: run.is_consistent,
+      has_divergence: run.has_divergence,
+      drifts: JSON.stringify(run.drifts),
+    });
+  } catch (err) {
+    // Recording is best-effort; never let it mask the reconciliation outcome.
+    console.error('Failed to record reconciliation run:', err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Resolve the ledger to resume from on startup.
+ *
+ * The persisted cursor is authoritative: it is written transactionally with
+ * the derived state, so it always reflects the last fully-processed ledger.
+ * `START_LEDGER` is only consulted on a genuine first run (no cursor yet).
+ *
+ * If the persisted cursor is ahead of the chain head the indexer refuses to
+ * start rather than spinning on a ledger the chain has not produced.
+ */
+async function resolveStartLedger(
+  db: IndexerDB,
+  fetcher: SorobanFetcher,
+  contractId: string,
+  firstRunDefault: number,
+): Promise<number> {
+  const cursor = db.getCursor(`cursor:${contractId}`);
+
+  if (!cursor) {
+    console.log(`No persisted cursor; starting from START_LEDGER=${firstRunDefault}`);
+    return firstRunDefault;
+  }
+
+  const chainHead = await fetcher.getLatestLedger();
+  if (cursor.last_processed_ledger > chainHead) {
+    throw new Error(
+      `Persisted cursor (ledger ${cursor.last_processed_ledger}) is ahead of the ` +
+        `chain head (ledger ${chainHead}). Refusing to start; the database may ` +
+        `belong to a different network or the chain may have been reset.`,
+    );
+  }
+
+  console.log(
+    `Resuming from persisted cursor at ledger ${cursor.last_processed_ledger} ` +
+      `(chain head ${chainHead})`,
+  );
+  return cursor.last_processed_ledger + 1;
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const db = await IndexerDB.create(config.db_path);
@@ -25,7 +164,38 @@ async function main(): Promise<void> {
   if (config.reconcile_only) {
     console.log('\nRunning reconciliation...');
     const report = await reconcile(db, fetcher, config.contract_id);
-    console.log(`\nReconciliation ${report.is_consistent ? 'PASSED' : 'FAILED'}`);
+
+    const cursor = db.getCursor(`cursor:${config.contract_id}`);
+    const indexedLedger = cursor ? cursor.last_processed_ledger : 0;
+    const chainHeadLedger = report.onchain.total_wraps !== undefined
+      ? await fetcher.getLatestLedger().catch(() => indexedLedger)
+      : indexedLedger;
+
+    const drifts = analyzeDrift(report, indexedLedger, chainHeadLedger);
+    const divergences = drifts.filter((d) => d.kind === 'divergence');
+    const lags = drifts.filter((d) => d.kind === 'lag');
+    const hasDivergence = divergences.length > 0;
+
+    console.log(`\nReconciliation ${hasDivergence ? 'FAILED' : 'PASSED'}`);
+    console.log(`Ledger range: ${indexedLedger}-${chainHeadLedger}`);
+
+    if (lags.length > 0) {
+      console.log('Indexer lag (not a failure):');
+      for (const d of lags) {
+        console.log(`  - ${d.counter}: indexed=${d.indexed} onchain=${d.onchain} delta=${d.delta}`);
+      }
+    }
+
+    if (divergences.length > 0) {
+      console.log('Divergences:');
+      for (const d of divergences) {
+        console.log(
+          `  - ${d.counter}: indexed=${d.indexed} onchain=${d.onchain} ` +
+          `delta=${d.delta} tolerance=${d.tolerance}`,
+        );
+      }
+    }
+
     if (report.mismatches.length > 0) {
       console.log('Mismatches:');
       for (const m of report.mismatches) {
@@ -34,7 +204,23 @@ async function main(): Promise<void> {
     }
     console.log(`Indexed wraps: ${report.indexed.total_wraps}`);
     console.log(`On-chain wraps: ${report.onchain.total_wraps}`);
+
+    recordReconciliationRun(db, {
+      ran_at: new Date().toISOString(),
+      contract_id: config.contract_id,
+      indexed_ledger: indexedLedger,
+      chain_head_ledger: chainHeadLedger,
+      is_consistent: !hasDivergence,
+      has_divergence: hasDivergence,
+      drifts,
+    });
+
     db.close();
+
+    // Exit non-zero on genuine divergence so this is usable as a scheduled check.
+    if (hasDivergence) {
+      process.exit(1);
+    }
     return;
   }
 
@@ -57,10 +243,35 @@ async function main(): Promise<void> {
     // Run reconciliation after backfill
     console.log('\nRunning post-backfill reconciliation...');
     const report = await reconcile(db, fetcher, config.contract_id);
-    console.log(`Reconciliation: ${report.is_consistent ? 'PASSED' : 'FAILED'}`);
+
+    const cursor = db.getCursor(`cursor:${config.contract_id}`);
+    const indexedLedger = cursor ? cursor.last_processed_ledger : 0;
+    const chainHeadLedger = report.onchain.total_wraps !== undefined
+      ? await fetcher.getLatestLedger().catch(() => indexedLedger)
+      : indexedLedger;
+
+    const drifts = analyzeDrift(report, indexedLedger, chainHeadLedger);
+    const hasDivergence = drifts.some((d) => d.kind === 'divergence');
+
+    console.log(`Reconciliation: ${hasDivergence ? 'FAILED' : 'PASSED'}`);
+    for (const d of drifts) {
+      console.log(
+        `  - [${d.kind}] ${d.counter}: indexed=${d.indexed} onchain=${d.onchain} delta=${d.delta}`,
+      );
+    }
     for (const m of report.mismatches) {
       console.log(`  - ${m}`);
     }
+
+    recordReconciliationRun(db, {
+      ran_at: new Date().toISOString(),
+      contract_id: config.contract_id,
+      indexed_ledger: indexedLedger,
+      chain_head_ledger: chainHeadLedger,
+      is_consistent: !hasDivergence,
+      has_divergence: hasDivergence,
+      drifts,
+    });
 
     db.close();
     return;
@@ -69,75 +280,57 @@ async function main(): Promise<void> {
   // ── Live indexing mode ─────────────────────────────────────────────
   console.log('\nStarting live indexing...');
 
-  // Determine starting ledger from cursor or start_ledger config
-  const cursor = db.getCursor(`cursor:${config.contract_id}`);
-  let startLedger = cursor ? cursor.last_processed_ledger + 1 : config.start_ledger;
+  // Resume from the persisted cursor when present; START_LEDGER is a
+  // first-run default only. Refuse to start if the cursor is ahead of the
+  // chain head instead of spinning on a ledger the chain has not produced.
+  let startLedger: number;
+  try {
+    startLedger = await resolveStartLedger(db, fetcher, config.contract_id, config.start_ledger);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : err);
+    db.close();
+    process.exit(1);
+  }
 
   // Initialize state from DB or create empty
   let state: DerivedState;
-  const existingState = db.getContractState(config.contract_id);
-  if (existingState) {
-    state = createEmptyState(config.contract_id, startLedger);
-    // Load wraps from DB
-    console.log('Loading existing indexed state...');
+  const persistedState = db.getDerivedState(config.contract_id);
+  if (persistedState) {
+    state = persistedState;
   } else {
-    state = createEmptyState(config.contract_id, startLedger);
+    state = createEmptyState(config.contract_id);
   }
 
-  console.log(`Starting from ledger ${startLedger}`);
-  console.log(`Polling every ${config.poll_interval_ms}ms\n`);
-
-  // Main polling loop
-  let consecutiveErrors = 0;
+  // The cursor and the derived state are written together in a single
+  // transaction by persistStateToDB, so a restart can never observe a cursor
+  // that disagrees with the data derived from it.
+  let lastProcessedLedger = startLedger - 1;
 
   while (true) {
-    try {
-      const { events, latestLedger } = await fetcher.fetchEvents(startLedger);
+    const batch = await fetcher.fetchEvents(startLedger);
 
-      if (events.length > 0) {
-        const processed = processEventBatch(db, state, events);
-        const firstLedger = events[0].ledger;
-        const lastLedger = events[events.length - 1].ledger;
-        console.log(
-          `[${new Date().toISOString()}] Indexed ${processed} events ` +
-          `(ledgers ${firstLedger}-${lastLedger}, latest: ${latestLedger})`,
-        );
-      }
-
-      if (latestLedger > 0) {
-        startLedger = latestLedger + 1;
-        db.upsertCursor(
-          `cursor:${config.contract_id}`,
-          config.contract_id,
-          latestLedger,
-          latestLedger,
-        );
-      }
-
-      consecutiveErrors = 0;
-
-    } catch (err) {
-      consecutiveErrors++;
-      console.error(`Error (${consecutiveErrors}):`, err instanceof Error ? err.message : err);
-
-      if (consecutiveErrors >= 10) {
-        console.error('Too many consecutive errors. Exiting.');
-        break;
-      }
+    if (batch.events.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, config.poll_interval_ms));
+      continue;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, config.poll_interval_ms));
-  }
+    const result = processEventBatch(state, batch.events);
+    state = result.state;
 
-  db.close();
+    const batchLedger = batch.events.reduce(
+      (max, event) => Math.max(max, event.ledger),
+      lastProcessedLedger,
+    );
+
+    persistStateToDB(db, state, config.contract_id, batchLedger, batch.events);
+    lastProcessedLedger = batchLedger;
+    startLedger = batchLedger + 1;
+
+    console.log(`Processed ${batch.events.length} events up to ledger ${batchLedger}`);
+  }
 }
 
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled rejection:', err);
-  process.exit(1);
-});
-
 main().catch((err) => {
-  console.error('Fatal error:', err);
+  console.error('Fatal error:', err instanceof Error ? err.message : err);
   process.exit(1);
 });

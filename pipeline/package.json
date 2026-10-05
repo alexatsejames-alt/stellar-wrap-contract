@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^13.0.0",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "@vitest/coverage-v8": "^1.3.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.0",
     "vitest": "^1.3.0"

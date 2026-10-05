@@ -1,5 +1,5 @@
-use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env};
-
+use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
+use crate::constants::TTL_ONE_YEAR;
 use crate::{storage_accounting, ContractError, DataKey};
 
 /// Revokes an existing wrap record for the given user and period.
@@ -72,10 +72,7 @@ pub(crate) fn revoke_wrap(e: Env, user: Address, period: u64, reason_hash: Bytes
             &e,
             storage_accounting::estimate_wrapcount_bytes_new(),
         );
-        storage_accounting::sub_storage_bytes(
-            &e,
-            storage_accounting::estimate_latest_bytes_new(),
-        );
+        storage_accounting::sub_storage_bytes(&e, storage_accounting::estimate_latest_bytes_new());
     } else {
         e.storage()
             .persistent()

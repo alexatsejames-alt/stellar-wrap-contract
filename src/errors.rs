@@ -1,5 +1,10 @@
 use soroban_sdk::contracterror;
 
+/// Contract error codes.
+///
+/// User-facing copy for every variant lives in `error_messages.json` beside
+/// this file. `error_messages::every_variant_has_a_mapping` fails when a
+/// variant is added here without a matching entry.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -57,7 +62,7 @@ pub enum ContractError {
     WrapNotExpired = 46,
     InvalidExpirationDuration = 47,
     // Transfer errors
-    TransferFeeNotConfigured = 48,
+    TransferFeeAlreadyConfigured = 48,
     InvalidTransfer = 49,
     TransferInProgress = 50,
     StorageInvariantViolation = 51,

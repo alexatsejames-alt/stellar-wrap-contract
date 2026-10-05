@@ -112,58 +112,115 @@ design and are not represented by a `TimelockAction` variant.
 The **No** entries are an explicit scope decision: they remain admin-only, but
 the current closed `TimelockAction` enum provides no delayed operation for them.
 
-DAO governance is also subject to the delay. When the timelock is disabled, a
-passing `execute_admin_proposal` updates the admin immediately. When it is
-enabled, the current admin must authorize proposal execution, and the passing
-proposal queues `TimelockAction::SetAdmin`; the admin remains unchanged until
-that queued operation reaches its ETA and is executed.
+## Governance and timelock interaction
 
-## Guarantees and caveats
+Governance (`execute_admin_proposal`) and the timelock are two overlapping
+paths to the same privileged action — changing the admin. Their interaction is
+specified here and covered by tests in
+[`src/tests/governance_timelock.rs`](../src/tests/governance_timelock.rs).
 
-- **One-way switch.** `enable_timelock` can be called once
-  (`TimelockAlreadyEnabled`). There is no disable path; lengthening or
-  shortening the delay is itself a timelocked action, so any weakening of the
-  protection is announced by the same delay it is trying to weaken.
-- **Execution is not automatic.** After the ETA passes, the admin must still
-  call `timelock_execute`. A queued operation is removed from storage *before*
-  its effect is applied, so it can never be replayed.
-- **`eta` uses ledger timestamps**, not wall clock; treat the delay as
-  approximate to within normal ledger-close drift.
-- **Cancellation is admin-only.** The timelock buys observers time to react
-  (withdraw, alert, fork); it does not give them a veto.
-- Existing deployments are unaffected until `enable_timelock` is called, so this
-  is a backwards-compatible addition.
+### Does a governance proposal execute immediately?
 
-## Operator runbook
+It depends on whether the timelock is enabled, and this is explicit in code:
 
-```bash
-# 1. Turn it on with a 48-hour delay (one-way).
-enable_timelock --delay_seconds 172800
+- **Timelock disabled** (`TimelockDelay` absent): a passing proposal executes
+  immediately. `execute_admin_proposal` sets `Admin` in the same transaction.
+- **Timelock enabled** (`TimelockDelay` present): a passing proposal does **not**
+  execute immediately. The current admin must authorize execution, and the
+  passing proposal queues `TimelockAction::SetAdmin`; the admin remains
+  unchanged until that queued operation reaches its ETA and is executed via
+  `timelock_execute`.
 
-# 2. Queue an admin handover; note the returned id (or pre-compute it with
-#    timelock_operation_id).
-timelock_schedule --action '{"SetAdmin":"G..."}'
+So governance never bypasses the timelock: when the timelock is on, the
+proposal's effect is routed through the same delay as a direct admin handover.
 
-# 3. Anyone can audit the queue while the clock runs.
-timelock_pending
-timelock_operation --id <id>     # -> { action, eta, scheduled_at }
+### Can a timelocked action change the admin while a proposal is open?
 
-# 4. After eta, apply it.
-timelock_execute --id <id>
+Yes, and it is not a bypass. A `SetAdmin` scheduled through the timelock is an
+independent, admin-authorized operation. If it executes while a governance
+proposal to change the admin is still open, it simply replaces `Admin` and
+clears any `PendingAdmin`; the open proposal is then evaluated against the new
+admin. Both paths require the current admin's authorization, so neither can
+silently override the other without the admin's involvement.
 
-# Abort instead, at any time before step 4:
-timelock_cancel --id <id>
-```
+### Can governance schedule, cancel, or shorten a timelocked action?
 
-## Errors
+No. Governance has no entrypoint that touches the timelock queue:
 
-| Code | Error | Meaning |
-| --- | --- | --- |
-| 17 | `TimelockNotReady` | ETA not reached. |
-| 18 | `TimelockOperationNotFound` | Unknown or already-executed id. |
-| 19 | `TimelockOperationExists` | Identical action already queued. |
-| 20 | `InvalidTimelockDelay` | Delay out of bounds, or timelock not enabled. |
-| 21 | `TimelockRequired` | Direct admin call attempted while enabled. |
-| 22 | `TimelockAlreadyEnabled` | `enable_timelock` called twice. |
-| 23 | `TimelockOperationExpired` | Operation past ETA + GRACE_PERIOD. |
-| 24 | `TimelockOperationNotExpired` | Sweep attempted before grace period elapsed. |
+- **Schedule** — only `timelock_schedule` (admin-only) queues operations.
+  `execute_admin_proposal` may *cause* a `SetAdmin` to be queued when the
+  timelock is enabled, but it cannot schedule arbitrary actions.
+- **Cancel** — only `timelock_cancel` (admin-only) removes a queued operation.
+- **Shorten** — the delay can only be changed by
+  `TimelockAction::SetTimelockDelay`, which is itself subject to the current
+  delay. Governance cannot shorten it.
+
+## Full authority model
+
+This section is the single place that answers "who can change what, and how
+fast" across every privileged route. Each privileged action appears exactly
+once, with all of the routes that reach it.
+
+### Routes
+
+| Route | Who may initiate | Delay | Who can cancel |
+| --- | --- | --- | --- |
+| **Admin direct** | Current `Admin` | None (immediate) | n/a |
+| **Timelock** | Current `Admin` (`timelock_schedule`) | `TimelockDelay` (1h–30d) | Current `Admin` (`timelock_cancel`) |
+| **Governance proposal** | Any token holder meeting the proposal threshold | Voting period, then (if timelock enabled) `TimelockDelay` | Admin can cancel the queued `SetAdmin` via `timelock_cancel`; the proposal itself is not cancellable once passed |
+| **Bridge relayer** | Address registered via `set_bridge_relayer` | None (immediate) | Current `Admin` (by rotating the relayer) |
+
+### Privileged actions and their routes
+
+| Privileged action | Admin direct | Timelock | Governance | Bridge relayer | Fastest path |
+| --- | --- | --- | --- | --- | --- |
+| Change `Admin` (`update_admin` / `propose_admin`+`accept_admin`) | Yes | Yes (`SetAdmin`) | Yes (`execute_admin_proposal`) | No | Admin direct (immediate) |
+| Rotate mint-signing key (`SetAdminPubKey`) | No | Yes | No | No | Timelock (1h–30d) |
+| Upgrade WASM (`upgrade`) | No | Yes (`Upgrade`) | No | No | Timelock (1h–30d) |
+| Set/clear whitelist root (`set_whitelist_root` / `clear_whitelist_root`) | No | Yes (`SetWhitelistRoot`) | No | No | Timelock (1h–30d) |
+| Change timelock delay (`SetTimelockDelay`) | No | Yes | No | No | Timelock (current delay) |
+| Pause / unpause (`pause` / `unpause`) | Yes | No | No | No | Admin direct (immediate) |
+| Set transfer fee (`set_transfer_fee`) | Yes | No | No | No | Admin direct (immediate) |
+| Set expiration duration (`set_expiration_duration`) | Yes | No | No | No | Admin direct (immediate) |
+| Set fee params (`set_fee_params`) | Yes | No | No | No | Admin direct (immediate) |
+| Set stake config (`set_stake_config`) | Yes | No | No | No | Admin direct (immediate) |
+| Set bridge relayer (`set_bridge_relayer`) | Yes | No | No | No | Admin direct (immediate) |
+| Set chain status (`set_chain_status`) | Yes | No | No | No | Admin direct (immediate) |
+| Set name / symbol (`set_name` / `set_symbol`) | Yes | No | No | No | Admin direct (immediate) |
+| Migrate (`migrate`) | Yes | No | No | No | Admin direct (immediate) |
+| Backfill wrap periods (`backfill_wrap_periods`) | Yes | No | No | No | Admin direct (immediate) |
+| Cancel proposed admin (`cancel_proposed_admin`) | Yes | No | No | No | Admin direct (immediate) |
+| Bridge relay (mint / release) | No | No | No | Yes | Bridge relayer (immediate) |
+
+### Fastest path is the real security property
+
+The slowest route is not what protects the contract — the *fastest* route to
+each action is. Two consequences follow directly from the table above:
+
+- **Actions with an admin-direct route are only as safe as the admin key.**
+  `pause`, fee/config setters, `set_bridge_relayer`, `set_chain_status`,
+  `set_name`/`set_symbol`, `migrate`, and `backfill_wrap_periods` all take
+  effect in the same transaction the admin signs. The timelock does not slow
+  them down, because no `TimelockAction` variant exists for them.
+- **Actions with only a timelock route are protected by the delay.** Key
+  rotation, WASM upgrade, whitelist root changes, and delay changes cannot be
+  performed faster than `TimelockDelay` (minimum 1 hour).
+
+### Actions reachable by more than one route
+
+Only one action is reachable through multiple routes with **different
+guarantees**: changing the `Admin`.
+
+- **Admin direct** — immediate, single transaction.
+- **Timelock** — delayed by `TimelockDelay`, cancellable by the admin before
+  execution.
+- **Governance** — delayed by the voting period, and additionally by
+  `TimelockDelay` when the timelock is enabled.
+
+Because the admin-direct route is immediate, the effective guarantee for
+changing the admin is the *weakest* of the three: a compromised admin key can
+hand over ownership with no delay, regardless of the timelock or governance
+configuration. The timelock and governance routes add observability but do not
+raise the floor set by the direct route.
+
+No other privileged action is reachable by more than one route.

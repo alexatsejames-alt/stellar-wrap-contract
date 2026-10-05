@@ -1,4 +1,7 @@
-.PHONY: build test fuzz fuzz-build fmt fmt-check lint doc clean deploy-testnet wasm-build wasm-size check-wasm-size docker-build docker-build-verify coverage
+.PHONY: build test fuzz fuzz-build fmt fmt-check lint doc clean deploy-testnet wasm-build wasm-optimize soroban-build check-wasm-size wasm-size docker-build docker-build-verify coverage verify-release release-gate help test-contracts test-frontend test-pipeline test-verbose test-gas-report clean-snapshots clean-all
+
+WASM_PATH := target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm
+OPTIMIZED_WASM_PATH := target/wasm32-unknown-unknown/release/stellar_wrap_contract.optimized.wasm
 
 # ── Build ────────────────────────────────────────────────────────────────────
 
@@ -9,12 +12,10 @@ build: wasm-build
 wasm-build:
 	cargo build --release --target wasm32-unknown-unknown
 
-## check-wasm-size: Measure compiled WASM size against 200 KB budget (see SIGNATURE_VERIFICATION_DECISION.md)
-check-wasm-size:
-	./scripts/check_wasm_size.sh
-
-## wasm-size: Alias for check-wasm-size
-wasm-size: check-wasm-size
+## wasm-optimize: Build and write a deployment-optimized WASM artifact
+##   Requires the Stellar CLI. Output: $(OPTIMIZED_WASM_PATH)
+wasm-optimize: wasm-build
+	stellar contract optimize --wasm $(WASM_PATH) --wasm-out $(OPTIMIZED_WASM_PATH)
 
 ## soroban-build: Build via the Stellar CLI (alternative to cargo build --target wasm32)
 soroban-build:
@@ -25,6 +26,18 @@ soroban-build:
 ## test: Run all unit and integration tests
 test:
 	cargo test
+
+## test-contracts: Run Rust contract tests (cargo test --workspace)
+test-contracts:
+	cargo test --workspace
+
+## test-frontend: Run frontend tests (vitest)
+test-frontend:
+	cd frontend && npm test
+
+## test-pipeline: Run pipeline tests
+test-pipeline:
+	cd pipeline && npm test
 
 ## test-verbose: Run all tests with stdout output (useful for gas analysis)
 test-verbose:
@@ -102,11 +115,29 @@ deploy-testnet: wasm-build
 			--source "$(STELLAR_DEPLOYER_SECRET)"; \
 	fi
 
+# ── Release ──────────────────────────────────────────────────────────────────
+
+## verify-release: Download a release artifact + its SHA256 and verify the hash.
+##   Usage: make verify-release TAG=v1.2.3
+##   Optional: REPO=owner/name (defaults to the current git remote), ASSET=<name>
+##   Requires: gh CLI (authenticated) and sha256sum.
+verify-release:
+	@if [ -z "$(TAG)" ]; then echo "usage: make verify-release TAG=v1.2.3" >&2; exit 2; fi
+	./scripts/verify_release_artifact.sh "$(TAG)"
+
+## release-gate: Pre-flight checks that must pass before a mainnet release.
+##   Runs the test suite, the optimized WASM build, and confirms the changelog
+##   is updated against the tag. Usage: make release-gate TAG=v1.2.3
+release-gate:
+	@if [ -z "$(TAG)" ]; then echo "usage: make release-gate TAG=v1.2.3" >&2; exit 2; fi
+	./scripts/release_gate.sh "$(TAG)"
+
 # ── Clean ────────────────────────────────────────────────────────────────────
 
-## clean: Remove build artifacts
+## clean: Remove build artifacts and frontend/pipeline node_modules
 clean:
 	cargo clean
+	rm -rf frontend/node_modules pipeline/node_modules
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 

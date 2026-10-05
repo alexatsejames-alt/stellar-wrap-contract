@@ -3,7 +3,9 @@ use soroban_sdk::{Address, Env};
 use crate::{storage_accounting, DataKey, WrapRecord};
 
 // Shared helper: removes a wrap record and updates ownership indexes and
-// storage accounting in the same way for both `burn_wrap` and `revoke_wrap`.
+// storage accounting in the same way for `remove_wrap`, `burn_wrap`, and
+// `revoke_wrap`. Callers keep only their genuine differences (authorization,
+// events, accounting side effects) at the call site.
 pub(crate) fn remove_wrap_record(e: &Env, user: &Address, period: u64) {
     let wrap_key = DataKey::Wrap(user.clone(), period);
     if !e.storage().persistent().has(&wrap_key) {
@@ -97,4 +99,13 @@ pub(crate) fn remove_wrap_record(e: &Env, user: &Address, period: u64) {
             .persistent()
             .extend_ttl(&user_periods_key, 17_280 * 365, 17_280 * 365);
     }
+}
+
+// Entry point for the `remove_wrap` path. Folds the former standalone
+// `remove_wrap` implementation into the shared removal helper so that
+// `remove_wrap`, `burn_wrap`, and `revoke_wrap` all back onto a single
+// removal implementation. Authorization, events, and any accounting side
+// effects specific to `remove_wrap` remain the caller's responsibility.
+pub(crate) fn remove_wrap(e: &Env, user: &Address, period: u64) {
+    remove_wrap_record(e, user, period);
 }

@@ -22,3 +22,31 @@ path = "fuzz_targets/fuzz_mint_wrap.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_bridge_wrap_in"
+path = "fuzz_targets/fuzz_bridge_wrap_in.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_bridge_wrap_refund"
+path = "fuzz_targets/fuzz_bridge_wrap_refund.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_merkle_proof"
+path = "fuzz_targets/fuzz_merkle_proof.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_signature_payload"
+path = "fuzz_targets/fuzz_signature_payload.rs"
+test = false
+doc = false
+bench = false

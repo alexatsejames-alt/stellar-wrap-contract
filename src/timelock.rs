@@ -10,6 +10,7 @@
 use soroban_sdk::{panic_with_error, symbol_short, xdr::ToXdr, Bytes, BytesN, Env, Vec};
 
 use crate::{
+    constants::{MAX_PENDING_OPERATIONS, TTL_ONE_YEAR},
     storage_types::{TimelockAction, TimelockOperation},
     ContractError, DataKey,
 };
@@ -20,9 +21,6 @@ pub const MIN_DELAY: u64 = 3_600;
 /// Largest delay the timelock accepts (30 days). Prevents bricking the contract
 /// with an effectively infinite delay.
 pub const MAX_DELAY: u64 = 30 * 24 * 3_600;
-/// Maximum number of pending operations allowed in the queue.
-/// Prevents unbounded growth of the pending list.
-pub const MAX_PENDING_OPERATIONS: u32 = 64;
 /// Grace period after ETA during which an operation may still be executed.
 ///
 /// Once `now > eta + GRACE_PERIOD`, the operation is considered expired and

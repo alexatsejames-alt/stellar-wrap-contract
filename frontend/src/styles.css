@@ -48,6 +48,31 @@ button:disabled {
   opacity: 0.5;
 }
 
+/* Visible keyboard focus for every interactive element. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 2px;
+}
+
+/* Screen-reader-only text used to convey status beyond colour. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .app-shell {
   width: min(1180px, calc(100% - 40px));
   margin: 0 auto;
@@ -117,6 +142,52 @@ button:disabled {
   border-radius: 50%;
   background: var(--lime);
   box-shadow: 0 0 12px rgba(214, 255, 69, 0.7);
+}
+
+/* Status variants pair colour with a distinct shape so meaning is not
+   conveyed by colour alone. */
+.status-dot--connected {
+  background: var(--lime);
+  box-shadow: 0 0 12px rgba(214, 255, 69, 0.7);
+}
+
+.status-dot--wrong-network {
+  background: var(--orange);
+  box-shadow: 0 0 12px rgba(255, 121, 91, 0.7);
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+
+.status-dot--loading {
+  background: var(--muted);
+  box-shadow: none;
+  animation: status-pulse 1.2s ease-in-out infinite;
+}
+
+.status-dot--error {
+  background: var(--danger);
+  box-shadow: 0 0 12px rgba(255, 140, 121, 0.7);
+  border-radius: 2px;
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .status-dot--loading {
+    animation: none;
+  }
 }
 
 .hero {

@@ -3,3 +3,8 @@ channel = "1.94.1"
 components = ["rustfmt", "clippy"]
 targets = ["wasm32-unknown-unknown"]
 profile = "minimal"
+
+[env]
+# Pin the WASM optimizer so optimizer output is deterministic across builds.
+# A third party rebuilding a release artifact must use this exact version.
+WASM_OPT_VERSION = "0.116.1"

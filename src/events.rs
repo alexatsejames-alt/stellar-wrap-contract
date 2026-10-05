@@ -5,14 +5,16 @@
 //! variant converts to its corresponding `Symbol` and back, making
 //! event names strongly typed throughout the codebase.
 
-use soroban_sdk::{contracttype, Address, Env, Symbol};
+use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, Symbol};
 
-use crate::storage_types::{StakeConfig, WrapState};
+use crate::storage_types::{FeeParams, StakeConfig, WrapState};
 /// All events emitted by the contract.
 ///
 /// This enum is used for type-safe event publishing via [`publish_event`].
 /// Each variant maps to a `(domain, action)` pair and carries the data fields
 /// that are published as the event payload.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Event {
     // Admin
     AdminInit(Address),
@@ -21,10 +23,13 @@ pub enum Event {
     AdminFeeUpdated(Address, Address, i128),
     AdminFeeCleared,
     AdminUpgrade(u32, BytesN<32>),
+    FeeParamsUpdated(FeeParams),
 
     // Bridge
     BridgeOut(Address, u32, u64, BytesN<32>, u64),
     BridgeRefund(Address, u64, u64),
+    BridgeRefundRejected(Address, u64, Symbol),
+    BridgeRefundState(Address, u64, Symbol),
     BridgeInRej(Address, u32, u64, u64),
     BridgeIn(Address, u32, u64, u64),
 
@@ -96,12 +101,24 @@ pub fn publish_event(e: &Env, event: Event) {
             (v1, symbol_short!("admin"), symbol_short!("upgrade")),
             event,
         ),
+        Event::FeeParamsUpdated(..) => e.events().publish(
+            (v1, symbol_short!("admin"), symbol_short!("feeparam")),
+            event,
+        ),
 
         Event::BridgeOut(..) => e
             .events()
             .publish((v1, symbol_short!("bridge"), symbol_short!("out")), event),
         Event::BridgeRefund(..) => e.events().publish(
             (v1, symbol_short!("bridge"), symbol_short!("refund")),
+            event,
+        ),
+        Event::BridgeRefundRejected(..) => e.events().publish(
+            (v1, symbol_short!("bridge"), symbol_short!("ref_rej")),
+            event,
+        ),
+        Event::BridgeRefundState(..) => e.events().publish(
+            (v1, symbol_short!("bridge"), symbol_short!("ref_st")),
             event,
         ),
         Event::BridgeInRej(..) => e.events().publish(
@@ -206,6 +223,24 @@ pub fn publish_event(e: &Env, event: Event) {
         Event::TransferWithFee(..) => e
             .events()
             .publish((v1, symbol_short!("transfer"), symbol_short!("fee")), event),
+    }
+}
+
+/// Strongly typed event names for mint operations.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MintEventType {
+    Mint,
+    Transition,
+}
+
+impl MintEventType {
+    /// Convert this event type to a Soroban `Symbol`.
+    pub fn to_symbol(&self, e: &Env) -> Symbol {
+        match self {
+            MintEventType::Mint => symbol_short!("mint"),
+            MintEventType::Transition => symbol_short!("trans"),
+        }
     }
 }
 

@@ -471,3 +471,159 @@ proptest! {
         prop_assert!(result.is_ok());
     }
 }
+
+// ── Bridge Invariant Property Test ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeOp {
+    BridgeOut,
+    BridgeIn,
+    Refund,
+    Revoke,
+    Burn,
+}
+
+fn arb_bridge_op() -> impl Strategy<Value = BridgeOp> {
+    prop_oneof![
+        Just(BridgeOp::BridgeOut),
+        Just(BridgeOp::BridgeIn),
+        Just(BridgeOp::Refund),
+        Just(BridgeOp::Revoke),
+        Just(BridgeOp::Burn),
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sign_inbound(
+    env: &Env,
+    signing_key: &SigningKey,
+    contract: &Address,
+    source_chain: u32,
+    source_nonce: u64,
+    recipient: &Address,
+    period: u64,
+    archetype: &Symbol,
+    data_hash: &BytesN<32>,
+    payload_version: u32,
+) -> BytesN<64> {
+    let payload = crate::signature::construct_inbound_bridge_payload(
+        env,
+        contract,
+        source_chain,
+        source_nonce,
+        recipient,
+        period,
+        archetype,
+        data_hash,
+        payload_version,
+    );
+
+    let mut buf = [0u8; 512];
+    let len = payload.len() as usize;
+    payload.copy_into_slice(&mut buf[..len]);
+
+    let sig = signing_key.sign(&buf[..len]);
+    BytesN::from_array(env, &sig.to_bytes())
+}
+
+proptest! {
+    #[test]
+    fn prop_cross_chain_supply_invariant(
+        ops in proptest::collection::vec(arb_bridge_op(), 1..=20usize),
+        period in arb_period(),
+        raw_hash in arb_data_hash(),
+        archetype_str in arb_archetype(),
+    ) {
+        let (env, client, contract_id, signing_key, _) = setup_env();
+        let user = Address::generate(&env);
+        let archetype = Symbol::new(&env, archetype_str);
+        let data_hash = make_data_hash(&env, raw_hash);
+        
+        let relayer_signing_key = SigningKey::from_bytes(&[0xBB; 32]);
+        let relayer_pubkey = BytesN::from_array(&env, &relayer_signing_key.verifying_key().to_bytes());
+        let relayer_addr = Address::generate(&env);
+        
+        client.set_chain_status(&1, &true);
+        let relayers = soroban_sdk::Vec::from_array(&env, [relayer_pubkey.clone()]);
+        client.set_bridge_relayers(&1, &relayers, &1u32);
+        client.set_bridge_relayer(&relayer_addr);
+
+        let sig = sign_mint(&env, &signing_key, &contract_id, &user, period, &archetype, &data_hash, CURRENT_PAYLOAD_VERSION);
+        let _ = client.try_mint_wrap(&user, &period, &archetype, &data_hash, &CURRENT_PAYLOAD_VERSION, &sig);
+
+        let mut expected_supply: i32 = 1;
+        let mut outstanding_outbound: i32 = 0;
+        let mut active_nonce: Option<u64> = None;
+        let mut bridge_in_counter = 1000u64;
+
+        for op in ops {
+            match op {
+                BridgeOp::BridgeOut => {
+                    let recipient = BytesN::from_array(&env, &[0; 32]).into();
+                    if let Ok(nonce) = client.try_bridge_wrap_out(&user, &1u32, &recipient, &period) {
+                        active_nonce = Some(nonce);
+                        outstanding_outbound += 1;
+                    }
+                }
+                BridgeOp::Refund => {
+                    if let Some(nonce) = active_nonce {
+                        if client.try_bridge_wrap_refund(&nonce).is_ok() {
+                            active_nonce = None;
+                            outstanding_outbound -= 1;
+                        }
+                    }
+                }
+                BridgeOp::BridgeIn => {
+                    bridge_in_counter += 1;
+                    let source_nonce = bridge_in_counter;
+                    let in_sig = sign_inbound(
+                        &env, &relayer_signing_key, &contract_id, 1, source_nonce, &user, period, 
+                        &archetype, &data_hash, crate::signature::INBOUND_BRIDGE_SCHEME_VERSION
+                    );
+                    let sigs = soroban_sdk::Vec::from_array(&env, [in_sig]);
+                    
+                    if client.try_bridge_wrap_in(&1u32, &source_nonce, &user, &period, &archetype, &data_hash, &sigs).is_ok() {
+                        outstanding_outbound -= 1;
+                        active_nonce = None;
+                    }
+                }
+                BridgeOp::Revoke => {
+                    let mut was_active = false;
+                    if let Some(wrap) = client.get_wrap(&user, &period) {
+                        if wrap.fsm.state == crate::storage_types::WrapState::Active {
+                            was_active = true;
+                        }
+                    }
+                    let reason = BytesN::from_array(&env, &[0; 32]);
+                    if client.try_revoke_wrap(&user, &period, &reason).is_ok() {
+                        if was_active {
+                            expected_supply -= 1;
+                        }
+                    }
+                }
+                BridgeOp::Burn => {
+                    let mut was_active = false;
+                    if let Some(wrap) = client.get_wrap(&user, &period) {
+                        if wrap.fsm.state == crate::storage_types::WrapState::Active {
+                            was_active = true;
+                        }
+                    }
+                    if client.try_burn_wrap(&user, &period).is_ok() {
+                        if was_active {
+                            expected_supply -= 1;
+                        }
+                    }
+                }
+            }
+            
+            let mut local_active: i32 = 0;
+            if let Some(wrap) = client.get_wrap(&user, &period) {
+                if wrap.fsm.state == crate::storage_types::WrapState::Active {
+                    local_active = 1;
+                }
+            }
+            
+            prop_assert_eq!(local_active + outstanding_outbound, expected_supply, "Invariant failed: local_active ({}) + outstanding_outbound ({}) != expected_supply ({})", local_active, outstanding_outbound, expected_supply);
+        }
+    }
+}

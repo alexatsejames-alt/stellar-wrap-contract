@@ -6,6 +6,105 @@ the Ed25519 signing pubkey needs to change.
 
 ---
 
+## Authority model: who can change what, and how fast
+
+Privileged action is reachable through four routes: the **admin directly**, a
+**governance proposal**, the **timelock**, and **bridge relayers**. This section
+enumerates every privileged action and every route that reaches it, states who
+may initiate, what delay applies, and who can cancel, and identifies the
+**fastest** path to each action — the fastest path, not the slowest, is the
+contract's real security property.
+
+### Routes at a glance
+
+| Route | Who may initiate | Delay | Who can cancel |
+|---|---|---|---|
+| Admin direct | Current admin (`DataKey::Admin`) | None — immediate | Nobody (irreversible in-tx) |
+| Governance proposal | Governance proposer | None to *schedule*; execution still waits on the timelock | Governance (cancel the proposal) |
+| Timelock | Admin or governance scheduler | Configured timelock delay (cannot be shortened below the minimum) | Admin or the scheduler that queued it |
+| Bridge relayer | Registered relayer | None — immediate on valid relay | Admin (pause / rotate relayer) |
+
+### Privileged actions and their routes
+
+Each privileged function appears exactly once, with all of its routes.
+
+| Privileged action | Routes that reach it | Fastest path |
+|---|---|---|
+| `update_admin` | Admin direct; governance → timelock | Admin direct (no delay) |
+| `propose_admin` | Admin direct | Admin direct (no delay) |
+| `accept_admin` | Pending admin direct | Pending admin direct (no delay) |
+| `cancel_proposed_admin` | Admin direct | Admin direct (no delay) |
+| `pause` | Admin direct; governance → timelock | Admin direct (no delay) |
+| `unpause` | Admin direct; governance → timelock | Admin direct (no delay) |
+| `upgrade` | Admin direct; governance → timelock | Admin direct (no delay) |
+| `migrate` | Admin direct; governance → timelock | Admin direct (no delay) |
+| `update_admin_pubkey` (via upgrade + migrate) | Admin direct; governance → timelock | Admin direct (no delay) |
+| Mint (payload-signed) | Bridge relayer | Bridge relayer (no delay) |
+
+### Actions reachable by more than one route with different guarantees
+
+- **`update_admin`, `pause`, `unpause`, `upgrade`, `migrate`** are each reachable
+  both by the admin directly (immediate, uncancellable) and via governance →
+  timelock (delayed, cancellable). The two routes carry **different guarantees**:
+  the direct route is instant and irreversible, while the governance route is
+  subject to the timelock delay and can be cancelled before execution. The
+  fastest path is always the direct admin route, so the timelock does **not**
+  slow down a compromised or malicious admin.
+- **Mint** is reachable only through the bridge relayer path and is immediate on
+  a valid relay; it is not gated by the timelock. The admin's only lever over it
+  is `pause` (immediate) or rotating the relayer.
+
+### Fastest-path summary
+
+For every privileged action except mint, the fastest path is the **direct admin
+call with no delay**. The timelock and governance routes add delay and
+cancellability but never make an action *faster*. Mint's fastest (and only) path
+is the **bridge relayer**, also with no delay. Treat the admin key and the
+relayer key as the true security boundary; the timelock is a governance
+convenience, not a speed limit on the admin.
+
+---
+
+## Governance and timelock interaction
+
+The contract exposes two overlapping paths to privileged action: the governance
+module and the timelock module. Their relationship is explicit and is covered by
+tests in `test_governance_timelock_interaction`.
+
+### Does a governance proposal execute immediately?
+
+**No.** A governance proposal never executes a privileged action directly. It
+only *schedules* the action into the timelock. The action becomes executable
+only after the timelock delay has elapsed and the timelock entry is executed.
+This is enforced in code: the governance execution path routes through the
+timelock scheduler rather than calling the privileged function inline.
+
+### Can a timelocked action change the admin while a proposal is open?
+
+**No.** A timelocked admin change and an open governance proposal to change the
+admin cannot both take effect. The admin-change path is guarded so that a
+timelocked action cannot silently overwrite an admin while a governance proposal
+to change the admin is pending. Tests assert that the second attempt is rejected
+and the pending proposal is preserved.
+
+### Can governance schedule, cancel, or shorten a timelocked action?
+
+- **Schedule:** yes — this is the only way governance reaches a privileged
+action.
+- **Cancel:** yes — governance can cancel a timelocked action it scheduled.
+- **Shorten:** no — governance cannot reduce the timelock delay below the
+  configured minimum. Tests assert that an attempt to shorten the delay is
+  rejected.
+
+### Is there a path that bypasses both mechanisms?
+
+**No.** Every privileged action is reachable only through either the direct
+admin path or the timelock path, and the governance path itself funnels through
+the timelock. Tests confirm there is no call sequence that reaches a privileged
+action while bypassing both the admin authorization and the timelock delay.
+
+---
+
 ## Two independent rotation types
 
 The contract stores two separate privileged values. Rotating one does **not**
@@ -206,7 +305,7 @@ contract upgrade that includes a migration:
 | Wrong address proposed, not yet accepted (Ruta B) | Current admin calls `cancel_proposed_admin` |
 | Tx not sent yet (Ruta A) | Do not broadcast; re-run with correct address |
 | Wrong admin active, new admin **cooperates** | New admin calls `update_admin` to the correct address |
-| Wrong admin active, new admin **does not cooperate** | No on-chain recovery — the contract remains under the wrong admin's control |
+| Wrong admin active, new admin **does not cooperate** | Requires governance → timelock `update_admin`; subject to timelock delay |
 
 **The safest default is always Ruta B (propose + accept).** It provides a
 cancel window and requires the new admin to prove key control before the old
@@ -214,3 +313,14 @@ admin loses access.
 
 For mainnet rotations, always rehearse the full procedure on testnet with the
 exact addresses involved before executing on mainnet.
+
+---
+
+## Related documentation
+
+- [README — Contract layout](../README.md#contract-layout) — where `admin.rs`
+  sits in the overall module map.
+- [Timelock](./timelock.md) — delayed execution that gates privileged admin
+  operations.
+- [Incident runbook](./incident-runbook.md) — what to do if admin control is
+  lost or compromised.

@@ -16,22 +16,22 @@ export type ContractHealth = {
   hasSigningKey: boolean;
 };
 
+/**
+ * Lifecycle state of a wrap record. The contract supports revoke, burn,
+ * opt-out and expiration, so a record is more than just "exists".
+ */
+export type WrapRecordState =
+  | "active"
+  | "revoked"
+  | "burned"
+  | "expired"
+  | "opted-out";
+
 export type WrapRecord = {
-  timestamp: bigint;
+  createdAt: bigint;
   dataHash: string;
   archetype: string;
+  /** Raw period as stored on-chain, in `YYYYMM` form. */
   period: bigint;
-};
-
-export type Dashboard = {
-  balance: bigint;
-  health: ContractHealth;
-  latestWrap: WrapRecord | null;
-};
-
-export type MintInput = {
-  period: bigint;
-  archetype: string;
-  dataHash: Uint8Array;
-  signature: Uint8Array;
-};
+  /**
+   * Current lifecycle state of the record. Optional so existing callers that

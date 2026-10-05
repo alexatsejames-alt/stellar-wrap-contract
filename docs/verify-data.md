@@ -150,6 +150,84 @@ assert!(!client.verify_data(&user, &202401, &data));
 
 ---
 
+## Batch minting (`mint_wrap_batch`)
+
+`mint_wrap_batch` mints several `(user, period)` records under a single
+aggregated signature. The aggregated signature is **not** a blanket
+authorization for the batch: every record must be individually covered by the
+signature, and the batch is **atomic** — if any record fails verification the
+whole call reverts and no record is minted.
+
+### Per-record authorization
+
+Each record in the batch is verified against the aggregated signature on its
+own merits. A batch that verifies as a whole is not sufficient; a signature
+that covers records `A` and `B` does not authorize record `C`.
+
+```rust
+// Sign records A and B, then attempt to mint A, B, and an unsigned C.
+let batch = vec![&env, record_a, record_b, record_c];
+let result = client.try_mint_wrap_batch(&batch, &aggregated_signature);
+
+// The batch fails: C is not covered by the signature.
+assert!(result.is_err());
+```
+
+### Record substitution after signing
+
+If a record is substituted after signing, the whole batch must fail rather
+than minting the untampered remainder:
+
+```rust
+// Sign the original batch, then swap record_b for a tampered record_b'.
+let signed = vec![&env, record_a, record_b];
+let signature = sign_batch(&env, &signed);
+
+let substituted = vec![&env, record_a, tampered_record_b];
+let result = client.try_mint_wrap_batch(&substituted, &signature);
+
+// The batch reverts; record_a is NOT minted either.
+assert!(result.is_err());
+assert!(client.get_wrap(&user_a, &period_a).is_none());
+```
+
+### Atomicity
+
+Batch minting is atomic: a partial failure reverts the entire batch. There is
+no "mint the valid prefix" behaviour. This matches the documented guarantee —
+a batch either mints every record or mints none.
+
+```rust
+// One invalid record in the batch → no records are minted.
+let result = client.try_mint_wrap_batch(&batch_with_one_bad_record, &signature);
+assert!(result.is_err());
+
+for record in batch_with_one_bad_record.iter() {
+    assert!(client.get_wrap(&record.user, &record.period).is_none());
+}
+```
+
+### Guards, opt-out, and per-period uniqueness
+
+Batch minting applies the same per-record checks as single `mint_wrap`:
+
+- **Mint guard** — a record that fails the mint guard fails the batch.
+- **Opt-out** — a user who has opted out cannot be minted, even inside a batch.
+- **Per-period uniqueness** — a `(user, period)` that already has a wrap cannot
+  be re-minted by a batch.
+
+```rust
+// A user who opted out causes the whole batch to revert.
+let result = client.try_mint_wrap_batch(&batch_including_opted_out_user, &signature);
+assert!(result.is_err());
+
+// A duplicate (user, period) causes the whole batch to revert.
+let result = client.try_mint_wrap_batch(&batch_with_duplicate_period, &signature);
+assert!(result.is_err());
+```
+
+---
+
 ## Off-chain workflow summary
 
 ```

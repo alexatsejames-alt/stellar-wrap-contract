@@ -1,6 +1,7 @@
-import { FormEvent, useCallback, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   errorMessage,
+  formatPeriod,
   formatTimestamp,
   parseHexBytes,
   shortAddress,
@@ -20,6 +21,40 @@ const DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org";
 
 type BusyAction = "connect" | "refresh" | "search" | "mint" | null;
 
+type RecordState = "active" | "revoked" | "burned" | "expired" | "opted-out";
+
+const STATE_LABELS: Record<RecordState, string> = {
+  active: "Active",
+  revoked: "Revoked",
+  burned: "Burned",
+  expired: "Expired",
+  "opted-out": "Opted out",
+};
+
+const STATE_DESCRIPTIONS: Record<RecordState, string> = {
+  active: "Valid soulbound wrap record held by this account.",
+  revoked: "Revoked by the issuer; no longer valid.",
+  burned: "Burned by the holder; permanently destroyed.",
+  expired: "Past its validity period; no longer active.",
+  "opted-out": "Holder opted out of this record.",
+};
+
+function resolveRecordState(record: WrapRecord): RecordState {
+  if (record.revoked) {
+    return "revoked";
+  }
+  if (record.burned) {
+    return "burned";
+  }
+  if (record.optedOut) {
+    return "opted-out";
+  }
+  if (record.expired) {
+    return "expired";
+  }
+  return "active";
+}
+
 const initialDraft: NetworkConfig = {
   contractId: import.meta.env.VITE_STELLAR_CONTRACT_ID ?? "",
   rpcUrl: import.meta.env.VITE_STELLAR_RPC_URL ?? DEFAULT_RPC_URL,
@@ -34,19 +69,34 @@ function WrapCard({
   record: WrapRecord;
   title: string;
 }) {
+  const state = resolveRecordState(record);
   return (
-    <article className="wrap-card">
+    <article
+      className={`wrap-card wrap-card--${state}`}
+      aria-label={`${title}: ${record.archetype}, ${STATE_LABELS[state]}`}
+    >
       <div className="wrap-card__heading">
         <div>
           <span className="eyebrow">{title}</span>
           <h3>{record.archetype}</h3>
         </div>
-        <span className="period-pill">{record.period.toString()}</span>
+        <div className="wrap-card__badges">
+          <span
+            className={`state-badge state-badge--${state}`}
+            title={STATE_DESCRIPTIONS[state]}
+          >
+            {STATE_LABELS[state]}
+          </span>
+          <span className="period-pill" title={`Raw period: ${record.period}`}>
+            {formatPeriod(record.period)}
+          </span>
+        </div>
       </div>
+      <p className="wrap-card__state-note">{STATE_DESCRIPTIONS[state]}</p>
       <dl className="record-grid">
         <div>
           <dt>Minted</dt>
-          <dd>{formatTimestamp(record.timestamp)}</dd>
+          <dd>{formatTimestamp(record.createdAt)}</dd>
         </div>
         <div>
           <dt>Data hash</dt>
@@ -55,6 +105,9 @@ function WrapCard({
           </dd>
         </div>
       </dl>
+      <p className="wrap-card__soulbound">
+        Soulbound — this record cannot be transferred or sold.
+      </p>
     </article>
   );
 }
@@ -97,6 +150,9 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState<BusyAction>(null);
 
+  const connectButtonRef = useRef<HTMLButtonElement | null>(null);
+  const wasConnectedRef = useRef(false);
+
   const clearMessages = () => {
     setError("");
     setNotice("");
@@ -122,6 +178,20 @@ export default function App() {
     },
     [config, wallet],
   );
+
+  // Manage focus when the wallet connection state changes: when a wallet
+  // connects, move focus to the connected status region; when it disconnects
+  // or errors, return focus to the wallet-connect control so keyboard users
+  // are not dropped back at the top of the document.
+  useEffect(() => {
+    if (wallet && !wasConnectedRef.current) {
+      wasConnectedRef.current = true;
+      document.getElementById("wallet-status")?.focus();
+    } else if (!wallet && wasConnectedRef.current) {
+      wasConnectedRef.current = false;
+      connectButtonRef.current?.focus();
+    }
+  }, [wallet]);
 
   const handleConfigure = (event: FormEvent) => {
     event.preventDefault();
@@ -227,311 +297,230 @@ export default function App() {
 
   const isBusy = busy !== null;
 
+  const walletStatus = !wallet
+    ? "Not connected"
+    : wallet.networkPassphrase === config?.networkPassphrase
+      ? `Connected as ${shortAddress(wallet.address)} on ${wallet.network}`
+      : `Wrong network: Freighter is on ${wallet.network}`;
+
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
       <header className="topbar">
         <a className="brand" href="#top" aria-label="Stellar Wrap home">
-          <span className="brand__mark">W</span>
+          <span className="brand__mark" aria-hidden="true">
+            W
+          </span>
           <span>
             <strong>Stellar Wrap</strong>
             <small>On-chain registry</small>
           </span>
         </a>
         <div className="wallet-area">
-          {wallet ? (
-            <span className="wallet-chip" title={wallet.address}>
-              <span className="status-dot" />
-              {shortAddress(wallet.address)}
-            </span>
-          ) : (
-            <button
-              className="button button--primary"
-              type="button"
-              onClick={handleConnect}
-              disabled={!config || isBusy}
-            >
-              {busy === "connect" ? "Connecting…" : "Connect Freighter"}
-            </button>
-          )}
+          <p
+            id="wallet-status"
+            className="wallet-status"
+            role="status"
+            aria-live="polite"
+            tabIndex={-1}
+          >
+            {walletStatus}
+          </p>
+          <button
+            ref={connectButtonRef}
+            type="button"
+            className="button button--primary"
+            onClick={handleConnect}
+            disabled={!config || isBusy}
+            aria-busy={busy === "connect"}
+            aria-label={
+              wallet
+                ? "Reconnect Freighter wallet"
+                : "Connect Freighter wallet"
+            }
+          >
+            {busy === "connect"
+              ? "Connecting…"
+              : wallet
+                ? "Reconnect wallet"
+                : "Connect wallet"}
+          </button>
         </div>
       </header>
 
-      <main id="top">
-        <section className="hero">
-          <div className="hero__copy">
-            <span className="eyebrow">Proof that stays with you</span>
-            <h1>Your Stellar story, wrapped on-chain.</h1>
-            <p>
-              Connect Freighter to inspect non-transferable wrap records and mint
-              a signed new entry to the Stellar Wrap registry.
+      <main id="main-content" tabIndex={-1}>
+        <div
+          className="status-region"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {busy ? <p className="status status--busy">Loading: {busy}…</p> : null}
+          {notice ? <p className="status status--notice">{notice}</p> : null}
+          {error ? (
+            <p className="status status--error" role="alert">
+              Error: {error}
             </p>
-          </div>
-          <div className="hero__orb" aria-hidden="true">
-            <span>WRAP</span>
-          </div>
-        </section>
-
-        <div className="message-stack" aria-live="polite">
-          {error ? <div className="message message--error">{error}</div> : null}
-          {notice ? (
-            <div className="message message--success">{notice}</div>
           ) : null}
         </div>
 
-        <section className="panel setup-panel" aria-labelledby="setup-title">
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow">Step 01</span>
-              <h2 id="setup-title">Choose your contract</h2>
-            </div>
-            {config ? <span className="status-badge">Configured</span> : null}
-          </div>
-          <form className="config-form" onSubmit={handleConfigure}>
+        <section className="panel" aria-labelledby="config-heading">
+          <h2 id="config-heading">Contract configuration</h2>
+          <form onSubmit={handleConfigure}>
             <Field id="contract-id" label="Contract ID">
               <input
                 id="contract-id"
                 value={draft.contractId}
                 onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    contractId: event.target.value,
-                  }))
+                  setDraft({ ...draft, contractId: event.target.value })
                 }
-                placeholder="C…"
-                autoComplete="off"
-                spellCheck={false}
+                required
               />
             </Field>
-            <details className="advanced-config">
-              <summary>Network settings</summary>
-              <div className="advanced-config__grid">
-                <Field id="rpc-url" label="Soroban RPC URL">
-                  <input
-                    id="rpc-url"
-                    type="url"
-                    value={draft.rpcUrl}
-                    onChange={(event) =>
-                      setDraft((current) => ({
-                        ...current,
-                        rpcUrl: event.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-                <Field id="network-passphrase" label="Network passphrase">
-                  <input
-                    id="network-passphrase"
-                    value={draft.networkPassphrase}
-                    onChange={(event) =>
-                      setDraft((current) => ({
-                        ...current,
-                        networkPassphrase: event.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-              </div>
-            </details>
-            <button className="button button--secondary" type="submit">
-              Use contract
+            <Field id="rpc-url" label="RPC URL">
+              <input
+                id="rpc-url"
+                value={draft.rpcUrl}
+                onChange={(event) =>
+                  setDraft({ ...draft, rpcUrl: event.target.value })
+                }
+                required
+              />
+            </Field>
+            <Field id="network-passphrase" label="Network passphrase">
+              <input
+                id="network-passphrase"
+                value={draft.networkPassphrase}
+                onChange={(event) =>
+                  setDraft({ ...draft, networkPassphrase: event.target.value })
+                }
+                required
+              />
+            </Field>
+            <button type="submit" className="button">
+              Apply configuration
             </button>
           </form>
         </section>
 
-        {wallet && dashboard ? (
-          <>
-            <section className="dashboard" aria-labelledby="overview-title">
-              <div className="section-heading">
-                <div>
-                  <span className="eyebrow">Step 02</span>
-                  <h2 id="overview-title">Registry overview</h2>
-                </div>
-                <button
-                  className="button button--ghost"
-                  type="button"
-                  onClick={handleRefresh}
-                  disabled={isBusy}
-                >
-                  {busy === "refresh" ? "Refreshing…" : "Refresh"}
-                </button>
-              </div>
-              <div className="stat-grid">
-                <article className="stat-card">
-                  <span>Your wraps</span>
-                  <strong>{dashboard.balance.toString().padStart(2, "0")}</strong>
-                  <small>Non-transferable records</small>
-                </article>
-                <article className="stat-card">
-                  <span>Contract</span>
-                  <strong className="status-word">
-                    {dashboard.health.initialized ? "Ready" : "Offline"}
-                  </strong>
-                  <small>
-                    Admin {dashboard.health.hasAdmin ? "set" : "missing"} · Key{" "}
-                    {dashboard.health.hasSigningKey ? "set" : "missing"}
-                  </small>
-                </article>
-                <article className="stat-card">
-                  <span>Network</span>
-                  <strong className="status-word">{wallet.network}</strong>
-                  <small>{shortAddress(wallet.address)}</small>
-                </article>
-              </div>
-              {dashboard.latestWrap ? (
-                <WrapCard record={dashboard.latestWrap} title="Latest wrap" />
-              ) : (
-                <div className="empty-state">
-                  <span className="empty-state__mark">✦</span>
-                  <div>
-                    <h3>No wraps yet</h3>
-                    <p>Your first confirmed wrap will appear here.</p>
-                  </div>
-                </div>
-              )}
-            </section>
-
-            <section className="action-grid">
-              <article className="panel" aria-labelledby="find-title">
-                <span className="eyebrow">Explore</span>
-                <h2 id="find-title">Find a wrap</h2>
-                <p className="panel__intro">
-                  Query your wallet for a specific reporting period.
-                </p>
-                <form className="stacked-form" onSubmit={handleSearch}>
-                  <Field id="search-period" label="Period" hint="Format: YYYYMM">
-                    <input
-                      id="search-period"
-                      inputMode="numeric"
-                      value={searchPeriod}
-                      onChange={(event) => setSearchPeriod(event.target.value)}
-                      placeholder="202607"
-                      maxLength={6}
-                    />
-                  </Field>
-                  <button
-                    className="button button--secondary"
-                    disabled={isBusy}
-                    type="submit"
-                  >
-                    {busy === "search" ? "Searching…" : "Find record"}
-                  </button>
-                </form>
-                {searchResult === null ? (
-                  <p className="inline-empty">No wrap exists for that period.</p>
-                ) : searchResult ? (
-                  <WrapCard record={searchResult} title="Search result" />
-                ) : null}
-              </article>
-
-              <article className="panel mint-panel" aria-labelledby="mint-title">
-                <span className="eyebrow">Create</span>
-                <h2 id="mint-title">Mint a new wrap</h2>
-                <p className="panel__intro">
-                  Enter the commitment and signature issued by the trusted wrap
-                  service. Freighter will preview and approve the transaction.
-                </p>
-                <form className="stacked-form" onSubmit={handleMint}>
-                  <div className="form-row">
-                    <Field id="mint-period" label="Period" hint="YYYYMM">
-                      <input
-                        id="mint-period"
-                        inputMode="numeric"
-                        value={mintPeriod}
-                        onChange={(event) => setMintPeriod(event.target.value)}
-                        placeholder="202607"
-                        maxLength={6}
-                      />
-                    </Field>
-                    <Field id="archetype" label="Archetype">
-                      <input
-                        id="archetype"
-                        value={archetype}
-                        onChange={(event) => setArchetype(event.target.value)}
-                        placeholder="builder"
-                        maxLength={32}
-                      />
-                    </Field>
-                  </div>
-                  <Field
-                    id="data-hash"
-                    label="Data hash"
-                    hint="32-byte SHA-256 value in hexadecimal"
-                  >
-                    <textarea
-                      id="data-hash"
-                      value={dataHash}
-                      onChange={(event) => setDataHash(event.target.value)}
-                      placeholder="64 hexadecimal characters"
-                      rows={2}
-                      spellCheck={false}
-                    />
-                  </Field>
-                  <Field
-                    id="signature"
-                    label="Admin signature"
-                    hint="64-byte Ed25519 signature in hexadecimal"
-                  >
-                    <textarea
-                      id="signature"
-                      value={signature}
-                      onChange={(event) => setSignature(event.target.value)}
-                      placeholder="128 hexadecimal characters"
-                      rows={3}
-                      spellCheck={false}
-                    />
-                  </Field>
-                  <div className="security-note">
-                    <span aria-hidden="true">◎</span>
-                    <p>
-                      This app never asks for secret keys. Freighter signs only
-                      after contract simulation succeeds.
-                    </p>
-                  </div>
-                  <button
-                    className="button button--primary button--wide"
-                    disabled={isBusy || !dashboard.health.initialized}
-                    type="submit"
-                  >
-                    {busy === "mint" ? "Confirming on-chain…" : "Review & mint"}
-                  </button>
-                </form>
-                {transactionHash ? (
-                  <div className="transaction-result">
-                    <span>Confirmed transaction</span>
-                    <code>{transactionHash}</code>
-                  </div>
-                ) : null}
-              </article>
-            </section>
-          </>
-        ) : (
-          <section className="connect-gate">
-            <span className="connect-gate__icon" aria-hidden="true">
-              ↗
-            </span>
-            <div>
-              <h2>Connect to see your wraps</h2>
-              <p>
-                Configure the deployed contract, then approve this dApp in
-                Freighter. Your keys always stay inside the wallet.
-              </p>
+        {wallet ? (
+          <section className="panel" aria-labelledby="records-heading">
+            <div className="panel__heading">
+              <h2 id="records-heading">Your records</h2>
+              <button
+                type="button"
+                className="button"
+                onClick={handleRefresh}
+                disabled={isBusy}
+                aria-busy={busy === "refresh"}
+              >
+                {busy === "refresh" ? "Refreshing…" : "Refresh"}
+              </button>
             </div>
-            <button
-              className="button button--primary"
-              type="button"
-              onClick={handleConnect}
-              disabled={!config || isBusy}
-            >
-              {busy === "connect" ? "Connecting…" : "Connect Freighter"}
-            </button>
+            {dashboard ? (
+              <div className="records">
+                {dashboard.records.length === 0 ? (
+                  <p>No wrap records found for this account.</p>
+                ) : (
+                  dashboard.records.map((record) => (
+                    <WrapCard
+                      key={record.period}
+                      record={record}
+                      title="Held record"
+                    />
+                  ))
+                )}
+              </div>
+            ) : (
+              <p>Loading records…</p>
+            )}
           </section>
-        )}
-      </main>
+        ) : null}
 
-      <footer>
-        <span>Stellar Wrap Registry</span>
-        <span>Built for Soroban · Secured by Freighter</span>
-      </footer>
+        {wallet ? (
+          <section className="panel" aria-labelledby="search-heading">
+            <h2 id="search-heading">Verify a record</h2>
+            <form onSubmit={handleSearch}>
+              <Field id="search-period" label="Period">
+                <input
+                  id="search-period"
+                  value={searchPeriod}
+                  onChange={(event) => setSearchPeriod(event.target.value)}
+                  required
+                />
+              </Field>
+              <button
+                type="submit"
+                className="button"
+                disabled={isBusy}
+                aria-busy={busy === "search"}
+              >
+                {busy === "search" ? "Verifying…" : "Verify record"}
+              </button>
+            </form>
+            {searchResult === null ? (
+              <p role="status">No record found for that period.</p>
+            ) : searchResult ? (
+              <WrapCard record={searchResult} title="Verified record" />
+            ) : null}
+          </section>
+        ) : null}
+
+        {wallet ? (
+          <section className="panel" aria-labelledby="mint-heading">
+            <h2 id="mint-heading">Mint a wrap</h2>
+            <form onSubmit={handleMint}>
+              <Field id="mint-period" label="Period">
+                <input
+                  id="mint-period"
+                  value={mintPeriod}
+                  onChange={(event) => setMintPeriod(event.target.value)}
+                  required
+                />
+              </Field>
+              <Field id="mint-archetype" label="Archetype">
+                <input
+                  id="mint-archetype"
+                  value={archetype}
+                  onChange={(event) => setArchetype(event.target.value)}
+                  required
+                />
+              </Field>
+              <Field id="mint-data-hash" label="Data hash">
+                <input
+                  id="mint-data-hash"
+                  value={dataHash}
+                  onChange={(event) => setDataHash(event.target.value)}
+                  required
+                />
+              </Field>
+              <Field id="mint-signature" label="Admin signature">
+                <input
+                  id="mint-signature"
+                  value={signature}
+                  onChange={(event) => setSignature(event.target.value)}
+                  required
+                />
+              </Field>
+              <button
+                type="submit"
+                className="button button--primary"
+                disabled={isBusy}
+                aria-busy={busy === "mint"}
+              >
+                {busy === "mint" ? "Minting…" : "Mint wrap"}
+              </button>
+            </form>
+            {transactionHash ? (
+              <p role="status" className="hash-value">
+                Transaction confirmed: {transactionHash}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
+      </main>
     </div>
   );
 }

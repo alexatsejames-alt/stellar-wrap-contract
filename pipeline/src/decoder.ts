@@ -172,8 +172,8 @@ function decodeWrapRecord(valMap: xdr.ScMapEntry[]): WrapRecord {
     const raw = entry.val();
 
     switch (key) {
-      case 'timestamp':
-        record.timestamp = scvToU64(raw);
+      case 'created_at':
+        record.created_at = scvToU64(raw);
         break;
       case 'data_hash':
         record.data_hash = scvToBytesN(raw, 32);
@@ -184,23 +184,31 @@ function decodeWrapRecord(valMap: xdr.ScMapEntry[]): WrapRecord {
       case 'period':
         record.period = scvToU64(raw);
         break;
-      case 'fsm': {
-        const fsmMap = raw.map() ?? [];
-        record.fsm = decodeFSM(fsmMap);
+      case 'lifecycle': {
+        const lifecycleMap = raw.map() ?? [];
+        record.lifecycle = decodeFSM(lifecycleMap);
         break;
       }
-      case 'updated_at':
-        record.updated_at = scvToU64(raw);
-        break;
     }
   }
 
+  // Validate required fields are present and typed correctly
+  if (typeof record.created_at !== 'number') throw new Error('WrapRecord missing created_at');
+  if (typeof record.data_hash !== 'string') throw new Error('WrapRecord missing data_hash');
+  if (typeof record.archetype !== 'string') throw new Error('WrapRecord missing archetype');
+  if (typeof record.period !== 'number') throw new Error('WrapRecord missing period');
+
+  const lifecycle = (record.lifecycle as WrapLifecycleFSM) ?? { state: 3, updated_at: record.created_at };
+  if (lifecycle.state < 1 || lifecycle.state > 5) {
+    throw new Error(`WrapRecord lifecycle state out of range: ${lifecycle.state}`);
+  }
+
   return {
-    timestamp: record.timestamp as number,
-    data_hash: record.data_hash as string,
-    archetype: record.archetype as string,
-    period: record.period as number,
-    fsm: record.fsm as WrapLifecycleFSM ?? { state: 3, updated_at: record.timestamp as number },
+    created_at: record.created_at,
+    data_hash: record.data_hash,
+    archetype: record.archetype,
+    period: record.period,
+    lifecycle,
   };
 }
 
@@ -386,4 +394,45 @@ export function decodeLedgerEntry(
     ledger: ledgerEntry.lastModifiedLedgerSeq(),
     durability,
   };
+}
+
+// ─── Safe entry decode (skip-and-record, never throws) ──────────────────
+
+export interface DecodeError {
+  ledger: number;
+  keyBase64: string;
+  reason: string;
+}
+
+export type DecodeResult =
+  | { ok: true; entry: StorageEntry }
+  | { ok: false; error: DecodeError };
+
+/**
+ * Decode a raw key/value pair from chain storage.
+ * Never throws — malformed or unknown entries come back as { ok: false }.
+ * Callers must log or persist the error before discarding.
+ */
+export function tryDecodeStorageEntry(
+  keyScVal: xdr.ScVal,
+  valueScVal: xdr.ScVal,
+  ledger: number,
+  durability: 'persistent' | 'temporary' | 'instance',
+): DecodeResult {
+  let keyBase64 = '';
+  try {
+    keyBase64 = keyScVal.toXDR('base64');
+    const key = decodeDataKey(keyScVal);
+    const value = decodeStorageValue(key, valueScVal);
+    return { ok: true, entry: { key, value, ledger, durability } };
+  } catch (err) {
+    return {
+      ok: false,
+      error: {
+        ledger,
+        keyBase64,
+        reason: err instanceof Error ? err.message : String(err),
+      },
+    };
+  }
 }

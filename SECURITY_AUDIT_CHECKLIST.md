@@ -11,9 +11,41 @@
 
 This checklist provides a formal security audit framework for the Stellar Wrap Contract before mainnet deployment. Each item is linked to its implementation location in the codebase and includes acceptance criteria.
 
-**Audit Status:** ✅ COMPLETE - All requirements met  
+**Audit Status:** ⚠️ INCOMPLETE - Blocking security findings open  
 **External Reviewer Sign-off:** _______________  
 **Date:** _______________
+
+---
+
+## Overall Security Status
+
+**Status:** ❌ NOT READY FOR MAINNET — BLOCKED BY OPEN SECURITY FINDINGS
+
+This status is **derived from the open `security`-labelled issues** in the tracker, not hand-maintained. As long as any issue carrying the `security` label remains open, this checklist MUST report NOT READY and mainnet deployment MUST be blocked. The status cannot be marked ready by editing this document alone; it flips to ready only when the derived query below returns zero open `security` issues.
+
+**Derivation (run as part of the release process):**
+
+```
+# Any open issue with the `security` label blocks mainnet readiness.
+# If this returns any results, the status above is NOT READY.
+gh issue list --label security --state open
+```
+
+Do not hand-edit the status line to "READY" while the query above returns results.
+
+---
+
+## Blocking Findings (checked during release)
+
+This section is verified as part of the release process. Every item below is an **open** `security`-labelled issue and blocks mainnet deployment until resolved and closed.
+
+- [ ] **#647 — Arbitrary contract invocation.** A caller can invoke an arbitrary contract; must be constrained before mainnet.
+- [ ] **#650 — Missing Merkle domain separation.** Merkle leaves are not domain-separated, enabling cross-context proof reuse; must be fixed before mainnet.
+- [ ] **#651 — Unchecked arithmetic with overflow checks disabled.** Arithmetic in a profile with overflow checks disabled can wrap; must be made checked before mainnet.
+- [ ] **#653 — Mint signatures never expire.** Mint signatures remain valid indefinitely; must gain expiry/replay bounds before mainnet.
+- [ ] **#672 — Timelock actions stay executable forever.** Timelock actions never expire and remain executable indefinitely; must be bounded before mainnet.
+
+**Release gate:** Mainnet deployment is blocked while any box above is unchecked. Re-run the derivation query (`gh issue list --label security --state open`) and confirm it returns no results before proceeding.
 
 ---
 
@@ -49,7 +81,7 @@ This checklist provides a formal security audit framework for the Stellar Wrap C
 - `test_mint_with_all_ones_signature_rejected` ✅
 - `test_mint_with_tampered_signature_rejected` ✅
 
-**Related Issues:** None
+**Related Issues:** #653 (mint signatures never expire — open, blocking)
 
 ---
 
@@ -106,7 +138,7 @@ This checklist provides a formal security audit framework for the Stellar Wrap C
 
 ### 4. Integer Overflow Protection
 
-**Status:** ✅ FIXED  
+**Status:** ⚠️ PARTIAL — see blocking finding #651  
 **Location:** `src/lib.rs:429` (count increment), `src/lib.rs:584` (count decrement)
 
 **Implementation Details:**
@@ -125,7 +157,7 @@ This checklist provides a formal security audit framework for the Stellar Wrap C
 - No specific overflow tests found
 - **RECOMMENDATION:** Add test for maximum wrap count scenario
 
-**Related Issues:** None
+**Related Issues:** #651 (unchecked arithmetic with overflow checks disabled — open, blocking)
 
 **Fix Applied:** Changed `current_count + 1` to `current_count.checked_add(1).unwrap()`
 
@@ -246,20 +278,53 @@ Events emitted:
 - Uses `MintGuard` in temporary storage
 - Guard set at function entry, removed at exit
 - If guard exists, function panics with Unauthorized error
-- Temporary storage automatically clears on panic (TTL-based)
 
 **Acceptance Criteria:**
-- [x] Reentrancy guard implemented for state-changing functions
-- [x] Guard uses temporary storage (auto-cleanup)
-- [x] Guard prevents recursive calls
-- [x] Guard is removed on successful completion
-- [x] Guard cleanup on panic (via temporary storage TTL)
+- [x] Guard prevents reentrant calls to mint_wrap
+- [x] Guard prevents reentrant calls to claim_wrap
+- [x] Guard is cleared on both success and failure paths
 
 **Test Coverage:**
-- No explicit reentrancy tests found
-- **RECOMMENDATION:** Add reentrancy attack simulation test
+- `test_reentrancy_guard_blocks_reentry` ✅
 
 **Related Issues:** None
+
+---
+
+### 8a. Cross-Contract Call Surface (Reentrancy Analysis)
+
+**Status:** ✅ ANALYSED  
+**Location:** `src/oracle.rs` (oracle client), `src/token.rs` (token interface), `src/lib.rs` (stake / unstake / withdraw_stake)
+
+**Implementation Details:**
+Every call site that transfers control to another contract is enumerated below. For each, state is written before the external call and no invariant is observable in a broken intermediate state.
+
+| # | Call site | External call | State written before call | Invariant safe mid-call |
+|---|-----------|---------------|---------------------------|-------------------------|
+| 1 | `oracle.rs` `OracleClient::get_price` | Oracle contract `get_price` | None (read-only view) | Yes — no local state mutated |
+| 2 | `token.rs` `TokenClient::transfer` (stake) | Token contract `transfer` | Stake record + total staked written first | Yes — guard held, balances consistent |
+| 3 | `token.rs` `TokenClient::transfer` (unstake) | Token contract `transfer` | Stake record zeroed + total staked decremented first | Yes — guard held, no double-spend window |
+| 4 | `token.rs` `TokenClient::transfer` (withdraw_stake) | Token contract `transfer` | Pending withdrawal cleared before transfer | Yes — guard held, re-entry sees cleared state |
+
+**Reentrancy guard coverage:**
+- `stake`, `unstake`, and `withdraw_stake` all acquire the `MintGuard` (temporary storage) before any token callback and release it only after the external call returns.
+- A hostile token that re-enters on `transfer` callback hits the guard and panics with `Unauthorized` before it can observe or mutate state.
+- All balance mutations are committed to storage *before* the token `transfer` invocation, so a re-entering callback observes the post-write (consistent) state, never a broken intermediate.
+
+**Acceptance Criteria:**
+- [x] Every external call site enumerated (oracle, token, stake module)
+- [x] State written before external call at each site
+- [x] No invariant observable in a broken intermediate state
+- [x] `stake`, `unstake`, `withdraw_stake` guarded against token callback reentrancy
+- [x] Hostile re-entering mock cannot reach an inconsistent state
+
+**Test Coverage:**
+- `test_reentrant_token_on_stake_blocked` ✅
+- `test_reentrant_token_on_unstake_blocked` ✅
+- `test_reentrant_token_on_withdraw_stake_blocked` ✅
+- `test_oracle_view_call_does_not_mutate_state` ✅
+
+**Related Issues:** #886
 
 ---
 
@@ -390,7 +455,7 @@ Events emitted:
 
 ---
 
-## Overall Security Status: ✅ READY FOR MAINNET (with minor recommendations)
+## Overall Security Status: ❌ NOT READY FOR MAINNET — DERIVED FROM OPEN SECURITY ISSUES (see above)
 
 All critical security requirements from Issue #70 have been addressed:
 - ✅ Ed25519 signature verification correct and covers all fields

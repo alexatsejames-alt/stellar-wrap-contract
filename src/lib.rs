@@ -26,9 +26,7 @@ extern crate alloc;
 #[cfg(any(test, feature = "testutils"))]
 extern crate std;
 
-use soroban_sdk::{
-    contract, contractimpl, Address, Bytes, BytesN, Env, String, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 
 mod admin;
 mod alias;
@@ -36,6 +34,8 @@ mod bridge;
 mod burn;
 mod constants;
 mod errors;
+#[cfg(test)]
+mod error_messages;
 mod events;
 mod governance;
 mod merkle;
@@ -43,8 +43,8 @@ mod mint;
 mod optout;
 mod oracle;
 mod queries;
-mod revoke;
 mod remove_wrap;
+mod revoke;
 pub mod signature;
 mod stake;
 mod storage_accounting;
@@ -74,6 +74,38 @@ pub struct StellarWrapContract;
 #[contractimpl]
 #[allow(clippy::too_many_arguments)]
 impl StellarWrapContract {
+    /// Initializes the contract with the controlling admin address and the
+    /// Ed25519 public key used to verify mint signatures.
+    ///
+    /// Stores `admin`, `admin_pubkey`, and storage schema version `1`, and
+    /// emits an `("v1", "admin", "init")` event carrying `admin`. This
+    /// entrypoint does not require authorization and can be called only once.
+    ///
+    /// # Panics
+    /// - [`ContractError::AlreadyInitialized`] if the contract was already
+    ///   initialized.
+    /// - [`ContractError::InvalidAdminPubKey`] if `admin_pubkey` is the
+    ///   all-zero key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
+    /// use stellar_wrap_contract::StellarWrapContract;
+    ///
+    /// let env = Env::default();
+    /// let admin = Address::generate(&env);
+    /// // Any non-zero key. The all-zero public key is rejected.
+    /// let admin_pubkey = BytesN::from_array(&env, &[1u8; 32]);
+    ///
+    /// StellarWrapContract::initialize(env.clone(), admin.clone(), admin_pubkey.clone());
+    ///
+    /// assert_eq!(StellarWrapContract::get_admin(env.clone()), Some(admin));
+    /// assert_eq!(
+    ///     StellarWrapContract::get_admin_pubkey(env),
+    ///     Some(admin_pubkey)
+    /// );
+    /// ```
     pub fn initialize(e: Env, admin: Address, admin_pubkey: BytesN<32>) {
         admin::initialize(e, admin, admin_pubkey);
     }
@@ -280,6 +312,41 @@ impl StellarWrapContract {
         queries::total_wrap_count(e)
     }
 
+    /// Verifies that `data` matches the SHA-256 hash committed during minting for
+    /// the given `(user, period)` pair.
+    ///
+    /// Fetches the [`WrapRecord`] stored at `DataKey::Wrap(user, period)` and
+    /// computes `SHA-256(data)`. Returns `true` only when both conditions hold:
+    ///
+    /// 1. A wrap record exists for the `(user, period)` pair.
+    /// 2. The computed hash equals `WrapRecord::data_hash`.
+    ///
+    /// This is a read-only, permissionless entrypoint. It never mutates state,
+    /// never panics, and requires no authorization.
+    ///
+    /// # Parameters
+    /// - `user`: The address whose wrap record is being checked.
+    /// - `period`: The period (`YYYYMM` `u64`, e.g. `202401`) that identifies the record.
+    /// - `data`: The raw byte payload to verify against the stored hash.
+    ///
+    /// # Returns
+    /// - `true` — a wrap exists for `(user, period)` and `SHA-256(data)` matches
+    ///   the stored `data_hash`.
+    /// - `false` — either no wrap exists for `(user, period)`, or the hash of
+    ///   `data` does not match the stored hash (tampered or wrong payload).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // After minting a wrap whose data_hash = SHA-256(payload):
+    /// assert!(client.verify_data(&user, &202401u64, &payload));
+    ///
+    /// // A tampered payload returns false:
+    /// assert!(!client.verify_data(&user, &202401u64, &tampered_payload));
+    ///
+    /// // A non-existent user/period pair also returns false:
+    /// assert!(!client.verify_data(&unknown_user, &202401u64, &payload));
+    /// ```
     pub fn verify_data(e: Env, user: Address, period: u64, data: Bytes) -> bool {
         queries::verify_data(e, user, period, data)
     }
@@ -357,6 +424,11 @@ impl StellarWrapContract {
     /// `(user, period)` pairs are **not** automatically extended on new mints.
     /// Anyone can call this `extend_ttl` function to renew a specific wrap record.
     ///
+    /// **Batch renewal (permissionless):** Because a user accumulates one wrap record
+    /// per period, renewing N historical periods individually costs N transactions.
+    /// [`Self::extend_ttl_batch`] renews a bounded set of a user's periods in a single
+    /// call so a renewal bot can cover a user in one transaction.
+    ///
     /// **Bulk renewal (admin):** The `renew_all_ttls` function allows the admin to
     /// extend the TTL of all metadata keys for a user. Full wrap-enumeration renewal
     /// requires period tracking (see Issue #90).
@@ -365,6 +437,11 @@ impl StellarWrapContract {
     /// user could expire after ~1 year, even though the user is still participating.
     /// Off-chain bots or the admin should call `extend_ttl` for historical periods
     /// of active users to prevent data loss.
+    ///
+    /// **No-op calls:** A call for a `(user, period)` pair with no stored record renews
+    /// nothing, so it returns before touching the per-user metadata or the contract
+    /// instance TTL; a permissionless caller cannot drive instance-rent writes with a
+    /// call that accomplishes nothing else (Issue #678).
     ///
     /// # Parameters
     /// - `user`: The address whose storage entries will be extended.
@@ -383,6 +460,40 @@ impl StellarWrapContract {
     /// call's own resource fee.
     pub fn extend_ttl(e: Env, user: Address, period: u64) {
         ttl::extend_ttl(e, user, period);
+    }
+
+    /// Extend the TTL (time-to-live) for several of a user's wrap records in one call.
+    ///
+    /// This is the batch form of [`Self::extend_ttl`], intended for off-chain renewal
+    /// bots. Keeping N historical periods alive individually costs N transactions,
+    /// which is the "expiry risk" described in the TTL lifecycle; this entrypoint
+    /// covers a user's history in a single transaction.
+    ///
+    /// # TTL Lifecycle
+    ///
+    /// Follows the lifecycle documented on [`Self::extend_ttl`]: persistent entries
+    /// are stored with a ~1 year TTL, `mint_wrap` refreshes only the per-user metadata,
+    /// and historical records must be renewed explicitly. Each matching record in the
+    /// batch receives the same ~1 year window. The per-user metadata keys
+    /// (`WrapCount`, `LatestPeriod`) and the contract instance TTL are renewed once per
+    /// call rather than once per period.
+    ///
+    /// # Parameters
+    /// - `user`: The address whose wrap record TTLs will be extended.
+    /// - `periods`: The `YYYYMM` periods to renew, in any order. Periods with no stored
+    ///   record are skipped, so one stale period does not fail the whole batch.
+    ///
+    /// # Errors
+    /// - [`ContractError::BatchEmpty`] if `periods` is empty.
+    /// - [`ContractError::BatchTooLarge`] if more than `MAX_BATCH_SIZE` periods are
+    ///   supplied.
+    ///
+    /// # Security
+    /// Permissionless like [`Self::extend_ttl`] — no `require_auth`, so renewal bots
+    /// need no signing key. A batch that matches no records is a no-op and does not
+    /// extend the instance TTL (Issue #678).
+    pub fn extend_ttl_batch(e: Env, user: Address, periods: Vec<u64>) {
+        ttl::extend_ttl_batch(e, user, periods);
     }
 
     /// Admin-only function to extend TTL for all metadata keys associated with a user.
@@ -886,11 +997,19 @@ mod batch_test;
 #[cfg(test)]
 mod bridge_test;
 #[cfg(test)]
+mod events_test;
+#[cfg(test)]
 mod expiration_test;
+#[cfg(test)]
+mod governance_exec_test;
 #[cfg(test)]
 mod governance_test;
 #[cfg(test)]
+mod invariants_test;
+#[cfg(test)]
 mod last_updated_test;
+#[cfg(test)]
+mod merkle_test;
 #[cfg(test)]
 mod oracle_test;
 #[cfg(test)]
@@ -900,32 +1019,25 @@ mod prop_test;
 #[cfg(test)]
 mod queries_test;
 #[cfg(test)]
+mod revoke_test;
+#[cfg(test)]
 mod security_test;
 #[cfg(test)]
 mod stake_test;
 #[cfg(test)]
-mod invariants_test;
+mod storage_invariants_test;
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod governance_exec_test;
 #[cfg(test)]
 mod test_utils;
 #[cfg(test)]
 mod test_vectors;
 #[cfg(test)]
-mod transfer_test;
-#[cfg(test)]
-mod ttl_test;
-#[cfg(test)]
-mod queries_test;
+mod timelock_cancel_test;
 #[cfg(test)]
 mod timelock_test;
 #[cfg(test)]
-mod timelock_cancel_test;
-#[cfg(test)]
-mod revoke_test;
-
+mod transfer_test;
 #[cfg(test)]
 mod signature_expiry_test;
 
@@ -989,8 +1101,18 @@ mod invalid_signature_test {
         let period = 202501u64;
         let archetype = Symbol::new(&e, "TEST");
         let data_hash: BytesN<32> = BytesN::from_array(&e, &[2u8; 32]);
-        let payload_version = CURRENT_PAYLOAD_VERSION;
-        let valid_until = u64::MAX;
+        let payload_version = 1u32;
+
+        let signature = generate_signature(
+            &e,
+            &admin_b,
+            &pubkey_b,
+            &user,
+            period,
+            archetype,
+            &data_hash,
+            payload_version,
+        );
 
         // Sign with signer_b, but contract is initialized with pubkey_a
         let signature = sign_payload(

@@ -1,6 +1,7 @@
 #[cfg(any(test, feature = "testutils"))]
 extern crate std;
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Symbol};
+
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Symbol, Vec};
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -44,7 +45,6 @@ impl WrapLifecycleFSM {
                 | (WrapState::Pending, WrapState::Bridged)
                 | (WrapState::Active, WrapState::Archived)
                 | (WrapState::Active, WrapState::Cancelled)
-                | (WrapState::Active, WrapState::Bridged)
         )
     }
 
@@ -73,19 +73,19 @@ impl WrapLifecycleFSM {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WrapRecord {
     /// Timestamp associated with the wrap record.
-    pub timestamp: u64,
-
+    pub created_at: u64,
     /// 32-byte hash associated with the wrapped data.
     pub data_hash: BytesN<32>,
-
     /// Symbol identifying the wrap's archetype.
     pub archetype: Symbol,
-
     /// Period identifier used with the user to address this record in persistent storage.
     pub period: u64,
-
     /// Current lifecycle state and its last update timestamp.
-    pub fsm: WrapLifecycleFSM,
+    pub lifecycle: WrapLifecycleFSM,
+    /// Optional human-readable description attached by the admin.
+    pub description: Option<String>,
+    /// Optional image URL attached by the admin.
+    pub image_url: Option<String>,
 }
 
 #[contracttype]
@@ -187,7 +187,7 @@ pub struct InboundBridgeRecord {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BridgeRelayerSet {
-    pub relayers: soroban_sdk::Vec<BytesN<32>>,
+    pub relayers: Vec<BytesN<32>>,
     pub threshold: u32,
 }
 
@@ -236,6 +236,8 @@ pub enum DataKey {
     TotalRevoked,
     /// Stores a user-controlled 32-byte alias hash for privacy-preserving profile display.
     AliasHash(Address),
+    /// Stores the 32-byte hash that owns a given alias.
+    AliasOwner(BytesN<32>),
     /// Stores the token display name, if overridden by an admin.
     /// Falls back to a hardcoded default when unset — see `queries::name`.
     Name,
@@ -254,7 +256,8 @@ pub enum DataKey {
     LastUpdated(Address),
     /// Temporary mint reentrancy / double-call guard (temporary tier).
     MintGuard(Address),
-
+    /// Period that has been minted for a specific user, to prevent double minting.
+    MintedPeriod(Address, u32),
     // New instance storage keys for accounting / fee system:
     /// Estimated persistent storage bytes used by this contract (instance-level)
     StorageBytes,
@@ -262,7 +265,6 @@ pub enum DataKey {
     FeeParams,
     /// Merkle root committing to the off-chain whitelist (instance-level).
     WhitelistRoot,
-
     /// Mandatory delay, in seconds, between scheduling and executing a
     /// privileged action once the timelock is enabled (instance-level).
     TimelockDelay,
@@ -297,8 +299,7 @@ pub enum DataKey {
     AdminProposalVote(u64, Address),
     /// Tracks the contract version number, incremented on each `upgrade`.
     ContractVersion,
-    /// Tracks the storage schema version, set at initialization.
-    /// Used by future upgrades to determine which storage layout is active.
+    /// Schema version of the contract data layout.
     SchemaVersion,
     // Staking storage keys:
     /// Individual stake record keyed by user (persistent).
@@ -307,10 +308,6 @@ pub enum DataKey {
     StakeConfig,
     /// Total amount staked across all users (instance-level).
     TotalStaked,
-    /// Single relayer address that authorizes outbound bridge refunds
-    /// (`bridge_wrap_refund`). Kept alongside the per-chain relayer sets used
-    /// for inbound bridges.
-    BridgeRelayer,
 }
 
 #[contracttype]
@@ -370,7 +367,6 @@ pub struct InvariantReport {
     pub latest_period_matches_max: bool,
     pub all_user_periods_live: bool,
     pub balance_matches_wrap_count: bool,
-
     pub wrap_count: u32,
     pub user_periods_len: u32,
     pub wrap_periods_len: u32,
@@ -380,20 +376,12 @@ pub struct InvariantReport {
     pub balance: u32,
 }
 
-/// Aggregate summary of a user's active wraps across all periods.
-/// Returned by [`queries::get_wrap_summary`] and exposed as
-/// `get_wrap_summary` on the contract.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WrapSummary {
-    /// Total number of active wrap records for the user.
     pub total_wraps: u32,
-    /// All period IDs (YYYYMM) for which the user has an active wrap.
     pub periods: Vec<u64>,
-    /// Unique archetype symbols across all of the user's active wraps.
     pub archetypes: Vec<Symbol>,
-    /// The earliest (smallest) period the user has an active wrap in.
     pub first_period: u64,
-    /// The latest (largest) period the user has an active wrap in.
     pub latest_period: u64,
 }

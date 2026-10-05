@@ -30,7 +30,7 @@ pipeline/node_modules/
 /frontend/.env.local
 /frontend/*.tsbuildinfo
 
-# Scratch / temporary files (see issue #714)
+# Scratch / temporary files (see issues #714 and #888)
 temp_*.rs
 *.patch
 *_results.txt

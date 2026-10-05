@@ -2,23 +2,71 @@ import initSqlJs, { SqlJsStatic, Database as SqlJsDatabase } from 'sql.js';
 import type {
   EventRow,
   ContractStateRow,
+  DerivedState,
   LedgerCursorRow,
   StorageEntry,
+  WrapState,
+  WrapRecord,
 } from './types';
+
+// Inline only the fields db.ts needs from ReconciliationRun to avoid a circular import.
+interface ReconciliationRunRecord {
+  contract_id: string;
+  ledger_seq: number;
+  indexed_ledger_seq: number;
+  chain_head_ledger: number;
+  genuine_divergence: boolean;
+  affected_counters: string[];
+  is_consistent: boolean;
+  timestamp: string;
+}
+
+/**
+ * Current schema version understood by this code. Bump this whenever a
+ * forward migration is added below. The version is persisted inside the
+ * database itself (in the `schema_meta` table) so it travels with the data.
+ */
+export const SCHEMA_VERSION = 3;
+
+/**
+ * Thrown when the on-disk database was written by a newer version of the
+ * indexer than this code understands. We refuse to start rather than risk
+ * corrupt reads against an unknown schema.
+ */
+export class SchemaVersionError extends Error {
+  constructor(public readonly found: number, public readonly supported: number) {
+    super(
+      `Database schema version ${found} is newer than the supported version ${supported}. ` +
+        `Refusing to start to avoid corrupt reads. Upgrade the indexer or restore a compatible database.`,
+    );
+    this.name = 'SchemaVersionError';
+  }
+}
 
 export class IndexerDB {
   private db: SqlJsDatabase;
 
-  constructor(db: SqlJsDatabase) {
+  constructor(db: SqlJsDatabase, skipMigration: boolean = false) {
     this.db = db;
     this.db.run('PRAGMA foreign_keys = ON');
-    this.migrate();
+    if (!skipMigration) {
+      this.migrate();
+    }
   }
 
-  static async create(dbPath?: string): Promise<IndexerDB> {
+  static async create(
+    dbPathOrOpts?: string | { schemaVersion?: number; _rawDb?: SqlJsDatabase },
+  ): Promise<IndexerDB> {
     const SQL: SqlJsStatic = await initSqlJs();
     let db: SqlJsDatabase;
-    if (dbPath) {
+    const dbPath = typeof dbPathOrOpts === 'string' ? dbPathOrOpts : undefined;
+    const opts = typeof dbPathOrOpts === 'object' ? dbPathOrOpts : undefined;
+    const forcedVersion = opts?.schemaVersion;
+    const rawDb = opts?._rawDb;
+
+    if (rawDb) {
+      db = rawDb;
+    } else if (dbPath) {
       const fs = await import('fs');
       try {
         const buffer = fs.readFileSync(dbPath);
@@ -29,10 +77,103 @@ export class IndexerDB {
     } else {
       db = new SQL.Database();
     }
+
+    if (forcedVersion !== undefined) {
+      // Pre-seed schema_meta and skip migration so the forced version remains.
+      db.run(`CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+      db.run(
+        `INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        [String(forcedVersion)],
+      );
+      const instance = new IndexerDB(db, true);
+      instance['createBaselineSchema']();
+      return instance;
+    }
+
     return new IndexerDB(db);
   }
 
+  /** Expose the raw sql.js Database for test scenarios that need to pass it across create() calls. */
+  getRawDb(): SqlJsDatabase {
+    return this.db;
+  }
+
+  /**
+   * Reads the schema version stored in the database. A database that predates
+   * versioning (no `schema_meta` table) is treated as version 1, which is the
+   * implicit schema created by the original `migrate()` implementation.
+   */
+  private getStoredVersion(): number {
+    const hasMeta = this.fetchOne(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'`,
+    );
+    if (!hasMeta) return 1;
+    const row = this.fetchOne(`SELECT value FROM schema_meta WHERE key = 'schema_version'`);
+    if (!row) return 1;
+    const parsed = Number(row.value);
+    return Number.isFinite(parsed) ? parsed : 1;
+  }
+
+  private setStoredVersion(version: number): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS schema_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+    this.db.run(
+      `INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [String(version)],
+    );
+  }
+
+  getSchemaVersion(): number {
+    return this.getStoredVersion();
+  }
+
+  /** Test-only: overwrite the stored schema version without running migrations. */
+  private forceStoredVersion(version: number): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS schema_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+    this.db.run(
+      `INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [String(version)],
+    );
+  }
+
+  /**
+   * Applies forward migrations in order until the database matches
+   * SCHEMA_VERSION. Refuses to start against a database newer than this code.
+   *
+   * Breaking-change policy: migrations here are additive and upgrade in place.
+   * If a future change cannot be expressed as a forward migration, it must
+   * bump SCHEMA_VERSION and explicitly trigger a re-index from scratch (drop
+   * derived tables and reset the ledger cursor) rather than silently reading
+   * stale data. That decision is made here, not implicitly at read time.
+   */
   private migrate(): void {
+    const stored = this.getStoredVersion();
+    if (stored > SCHEMA_VERSION) {
+      throw new SchemaVersionError(stored, SCHEMA_VERSION);
+    }
+
+    // v1 -> v3: create the baseline tables and reconciliation history.
+    // `CREATE TABLE IF NOT EXISTS` makes this safe for existing databases.
+    if (stored < 3) {
+      this.createBaselineSchema();
+    }
+
+    this.setStoredVersion(SCHEMA_VERSION);
+  }
+
+  private createBaselineSchema(): void {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS contract_events (
         id TEXT PRIMARY KEY,
@@ -131,6 +272,34 @@ export class IndexerDB {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+
+    // Idempotency ledger: records which events have already been applied so
+    // that replays, backfills, and retries cannot double-apply derived state.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS applied_events (
+        event_id TEXT PRIMARY KEY,
+        contract_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        ledger_seq INTEGER NOT NULL,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_applied_events_contract
+      ON applied_events(contract_id, ledger_seq)`);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS reconciliation_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id TEXT NOT NULL,
+        ran_at TEXT NOT NULL,
+        ledger_seq INTEGER NOT NULL DEFAULT 0,
+        indexed_ledger INTEGER NOT NULL DEFAULT 0,
+        chain_head_ledger INTEGER NOT NULL DEFAULT 0,
+        is_consistent INTEGER NOT NULL,
+        has_divergence INTEGER NOT NULL,
+        drifts TEXT NOT NULL DEFAULT '[]'
+      )
+    `);
   }
 
   private exec(sql: string, params: unknown[] = []): void {
@@ -157,6 +326,109 @@ export class IndexerDB {
     }
     stmt.free();
     return rows;
+  }
+
+  // ─── Idempotency ────────────────────────────────────────────────────
+
+  /**
+   * Returns true if this event has not yet been applied and atomically
+   * records it as applied. Callers must skip derived-state writes when this
+   * returns false, which makes replay/backfill/retry safe at the key level.
+   */
+  markEventApplied(event: {
+    id: string;
+    contract_id: string;
+    event_type: string;
+    ledger_seq: number;
+  }): boolean {
+    const existing = this.fetchOne(
+      `SELECT event_id FROM applied_events WHERE event_id = ?`,
+      [event.id],
+    );
+    if (existing) return false;
+    this.exec(
+      `INSERT OR IGNORE INTO applied_events (event_id, contract_id, event_type, ledger_seq)
+       VALUES (?, ?, ?, ?)`,
+      [event.id, event.contract_id, event.event_type, event.ledger_seq],
+    );
+    return true;
+  }
+
+  isEventApplied(eventId: string): boolean {
+    const row = this.fetchOne(
+      `SELECT event_id FROM applied_events WHERE event_id = ?`,
+      [eventId],
+    );
+    return row !== null;
+  }
+
+  getAppliedEventIds(contractId: string): string[] {
+    const rows = this.fetchAll(
+      `SELECT event_id FROM applied_events WHERE contract_id = ? ORDER BY ledger_seq ASC`,
+      [contractId],
+    ) as { event_id: string }[];
+    return rows.map((r) => r.event_id);
+  }
+
+  // ─── Ledger cursor ──────────────────────────────────────────────────
+
+  /**
+   * Reads the durable cursor for a contract. Returns null when no cursor has
+   * been persisted yet, which signals a first run (callers fall back to
+   * START_LEDGER).
+   */
+  getLedgerCursor(contractId: string): LedgerCursorRow | null {
+    const row = this.fetchOne(
+      `SELECT * FROM ledger_cursor WHERE contract_id = ?`,
+      [contractId],
+    );
+    return (row as unknown as LedgerCursorRow) ?? null;
+  }
+
+  /**
+   * Persists the last fully-processed ledger together with the derived data
+   * for that ledger in a single transaction, so the cursor and the data it
+   * describes can never disagree across a restart.
+   */
+  commitLedger(
+    contractId: string,
+    lastProcessedLedger: number,
+    lastEventLedger: number,
+    applyDerived: () => void,
+  ): void {
+    this.db.run('BEGIN');
+    try {
+      applyDerived();
+      this.exec(
+        `INSERT INTO ledger_cursor (id, contract_id, last_processed_ledger, last_event_ledger, updated_at)
+         VALUES (?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET
+           last_processed_ledger = excluded.last_processed_ledger,
+           last_event_ledger = excluded.last_event_ledger,
+           updated_at = datetime('now')`,
+        [`cursor:${contractId}`, contractId, lastProcessedLedger, lastEventLedger],
+      );
+      this.db.run('COMMIT');
+    } catch (err) {
+      this.db.run('ROLLBACK');
+      throw err;
+    }
+  }
+
+  /**
+   * Guards against a persisted cursor that is ahead of the chain's current
+   * ledger (e.g. a reset/reorged network). Refuses to proceed instead of
+   * spinning forever waiting for ledgers that will never arrive.
+   */
+  assertCursorNotAhead(contractId: string, chainLedger: number): void {
+    const cursor = this.getLedgerCursor(contractId);
+    if (cursor && cursor.last_processed_ledger > chainLedger) {
+      throw new Error(
+        `Persisted cursor for ${contractId} is at ledger ${cursor.last_processed_ledger}, ` +
+          `ahead of the chain's current ledger ${chainLedger}. Refusing to proceed; ` +
+          `the database may be from a different network or the chain was reset.`,
+      );
+    }
   }
 
   // ─── Events ─────────────────────────────────────────────────────────
@@ -202,8 +474,6 @@ export class IndexerDB {
     return row?.max_ledger ?? null;
   }
 
-  // ─── Wrap Records ───────────────────────────────────────────────────
-
   upsertWrap(record: {
     contract_id: string;
     user: string;
@@ -248,8 +518,6 @@ export class IndexerDB {
     return row.count;
   }
 
-  // ─── User State ─────────────────────────────────────────────────────
-
   upsertUserState(state: {
     contract_id: string;
     user: string;
@@ -277,8 +545,6 @@ export class IndexerDB {
       [state.contract_id, state.user, state.wrap_count, state.latest_period, state.alias_hash, state.slash_count, state.is_slashed ? 1 : 0, JSON.stringify(state.periods), state.ledger_seq],
     );
   }
-
-  // ─── Contract State ─────────────────────────────────────────────────
 
   upsertContractState(state: {
     contract_id: string;
@@ -315,14 +581,82 @@ export class IndexerDB {
   }
 
   getContractState(contractId: string): ContractStateRow | null {
-    const row = this.fetchOne(
+    return this.fetchOne(
       `SELECT * FROM contract_state WHERE contract_id = ?`,
       [contractId],
-    ) as ContractStateRow | null;
-    return row ?? null;
+    ) as unknown as ContractStateRow | null;
   }
 
-  // ─── Storage Snapshots ──────────────────────────────────────────────
+  getDerivedState(contractId: string): DerivedState | null {
+    const contract = this.getContractState(contractId);
+    if (!contract) return null;
+
+    const state: DerivedState = {
+      contract_id: contractId,
+      ledger_seq: contract.ledger_seq,
+      wraps: new Map(),
+      userCounts: new Map(),
+      userLatestPeriods: new Map(),
+      userPeriods: new Map(),
+      userAliasHashes: new Map(),
+      userSlashCounts: new Map(),
+      userSlashed: new Map(),
+      admin: contract.admin ?? null,
+      adminPubKey: contract.admin_pubkey ?? null,
+      pendingAdmin: contract.pending_admin ?? null,
+      migrationVersion: contract.migration_version,
+      paused: Boolean(contract.is_paused) || contract.is_paused === true,
+      totalWrapCount: contract.total_wrap_count,
+      totalRevoked: contract.total_revoked,
+      storageBytes: contract.storage_bytes,
+      slashThreshold: contract.slash_threshold,
+      name: null,
+      symbol: null,
+    };
+
+    const wraps = this.fetchAll(
+      `SELECT * FROM wrap_records WHERE contract_id = ?`,
+      [contractId],
+    );
+    for (const row of wraps) {
+      const user = String(row.user);
+      const period = Number(row.period);
+      let userWraps = state.wraps.get(user);
+      if (!userWraps) {
+        userWraps = new Map();
+        state.wraps.set(user, userWraps);
+      }
+      userWraps.set(period, {
+        created_at: Number(row.timestamp),
+        data_hash: String(row.data_hash),
+        archetype: String(row.archetype),
+        period,
+        lifecycle: {
+          state: Number(row.fsm_state) as WrapState,
+          updated_at: Number(row.fsm_updated_at),
+        },
+      });
+    }
+
+    const users = this.fetchAll(
+      `SELECT * FROM user_state WHERE contract_id = ?`,
+      [contractId],
+    );
+    for (const row of users) {
+      const user = String(row.user);
+      state.userCounts.set(user, Number(row.wrap_count));
+      if (row.latest_period !== null) state.userLatestPeriods.set(user, Number(row.latest_period));
+      if (row.alias_hash !== null) state.userAliasHashes.set(user, String(row.alias_hash));
+      state.userSlashCounts.set(user, Number(row.slash_count));
+      state.userSlashed.set(user, (row.is_slashed as number) === 1 || row.is_slashed === true);
+      try {
+        state.userPeriods.set(user, JSON.parse(String(row.periods_json)) as number[]);
+      } catch {
+        state.userPeriods.set(user, []);
+      }
+    }
+    return state;
+  }
 
   insertStorageSnapshot(entry: StorageEntry, contractId: string): void {
     this.exec(
@@ -333,14 +667,11 @@ export class IndexerDB {
     );
   }
 
-  // ─── Ledger Cursor ──────────────────────────────────────────────────
-
   getCursor(id: string): LedgerCursorRow | null {
-    const row = this.fetchOne(
+    return this.fetchOne(
       `SELECT * FROM ledger_cursor WHERE id = ?`,
       [id],
-    ) as LedgerCursorRow | null;
-    return row ?? null;
+    ) as unknown as LedgerCursorRow | null;
   }
 
   upsertCursor(id: string, contractId: string, processedLedger: number, eventLedger: number): void {
@@ -355,36 +686,58 @@ export class IndexerDB {
     );
   }
 
-  // ─── Stats ──────────────────────────────────────────────────────────
-
   getStats(contractId: string): Record<string, unknown> {
     const eventCount = this.fetchOne(
-      `SELECT COUNT(*) as c FROM contract_events WHERE contract_id = ?`,
+      `SELECT COUNT(*) as count FROM contract_events WHERE contract_id = ?`,
       [contractId],
-    ) as { c: number };
-
-    const wrapCount = this.fetchOne(
-      `SELECT COUNT(*) as c FROM wrap_records WHERE contract_id = ?`,
-      [contractId],
-    ) as { c: number };
-
-    const userCount = this.fetchOne(
-      `SELECT COUNT(*) as c FROM user_state WHERE contract_id = ?`,
-      [contractId],
-    ) as { c: number };
-
-    const lastLedger = this.fetchOne(
-      `SELECT MAX(ledger_seq) as ml FROM contract_events WHERE contract_id = ?`,
-      [contractId],
-    ) as { ml: number | null };
-
+    ) as { count: number };
+    const lastLedger = this.getLatestEventLedger(contractId);
     return {
       contract_id: contractId,
-      total_events: eventCount.c,
-      total_wraps: wrapCount.c,
-      total_users: userCount.c,
-      last_indexed_ledger: lastLedger.ml,
+      total_events: eventCount.count,
+      total_wraps: this.getWrapCount(contractId),
+      total_users: Number((this.fetchOne(
+        `SELECT COUNT(*) as count FROM user_state WHERE contract_id = ?`,
+        [contractId],
+      ) as { count: number }).count),
+      last_indexed_ledger: lastLedger,
     };
+  }
+
+  recordReconciliation(run: {
+    ran_at: string;
+    contract_id: string;
+    indexed_ledger: number;
+    chain_head_ledger: number;
+    is_consistent: boolean;
+    has_divergence: boolean;
+    drifts: string;
+  }): void {
+    this.exec(
+      `INSERT INTO reconciliation_runs
+        (contract_id, ran_at, indexed_ledger, chain_head_ledger, is_consistent, has_divergence, drifts)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [run.contract_id, run.ran_at, run.indexed_ledger, run.chain_head_ledger, run.is_consistent ? 1 : 0, run.has_divergence ? 1 : 0, run.drifts],
+    );
+  }
+
+  recordReconciliationRun(run: {
+    contract_id: string;
+    ledger_seq: number;
+    indexed_ledger_seq: number;
+    chain_head_ledger: number;
+    indexer_lagging: boolean;
+    genuine_divergence: boolean;
+    affected_counters: string[];
+    is_consistent: boolean;
+    timestamp: string;
+  }): void {
+    this.exec(
+      `INSERT INTO reconciliation_runs
+        (contract_id, ran_at, ledger_seq, indexed_ledger, chain_head_ledger, is_consistent, has_divergence, drifts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [run.contract_id, run.timestamp, run.ledger_seq, run.indexed_ledger_seq, run.chain_head_ledger, run.is_consistent ? 1 : 0, run.genuine_divergence ? 1 : 0, JSON.stringify(run.affected_counters)],
+    );
   }
 
   close(): void {

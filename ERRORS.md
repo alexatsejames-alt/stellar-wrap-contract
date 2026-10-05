@@ -37,6 +37,36 @@ The codes are defined by the Rust `ContractError` enum in `src/lib.rs`.
 
 ---
 
+## Variant → producing code path → failing-path test
+
+Every variant in `ContractError` must be reachable from a code path and asserted by at least one failing-path test. This table is the source of truth for that mapping; keep it in sync when adding or removing variants.
+
+| Code | Variant | Producing code path | Failing-path test |
+|---:|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize()` guard when `DataKey::Admin` is already set | `test_initialize_twice_fails` (asserts `Error(Contract, #1)`) |
+| 2 | `NotInitialized` | `require_initialized()` / admin lookup when `DataKey::Admin` is unset | `test_mint_before_initialize_fails` (asserts `Error(Contract, #2)`) |
+| 3 | `Unauthorized` | `require_admin()` on admin-only entrypoints; `user.require_auth()` in `mint_wrap`; reentrancy guard | `test_non_admin_update_wrap_fails`, `test_mint_wrong_auth_fails` (assert `Error(Contract, #3)`) |
+| 4 | `WrapAlreadyExists` | `mint_wrap` duplicate `(user, period)` check | `test_mint_duplicate_period_fails` (asserts `Error(Contract, #4)`) |
+| 5 | `InvalidSignature` | `verify_ed25519` failure in `mint_wrap` | `test_mint_bad_signature_fails` (asserts `Error(Contract, #5)`) |
+| 6 | `InvalidPeriod` | `validate_period()` range/format check | `test_mint_invalid_period_fails` (asserts `Error(Contract, #6)`) |
+| 7 | `WrapNotFound` | `revoke_wrap` / `get_wrap` lookup miss | `test_revoke_missing_wrap_fails` (asserts `Error(Contract, #7)`) |
+
+If a variant has no producing code path, it is dead surface and must be removed from `ContractError` (and from this table). If a variant is reachable but has no failing-path test, add one before merging.
+
+---
+
+## CI guard: new variants must ship with a test
+
+To keep the mapping above from rotting, CI runs a check that fails when a variant is added to `ContractError` without a corresponding failing-path test. The check:
+
+1. Parses the `ContractError` enum in `src/lib.rs` and collects every variant name.
+2. Scans the test suite for each variant name (e.g. `ContractError::InvalidPeriod` or `Error(Contract, #6)`).
+3. Fails the build if any variant is not referenced by at least one test.
+
+When you add a variant, add its producing code path, a failing-path test that asserts it, and a row in the table above in the same PR.
+
+---
+
 ## Example Soroban CLI output
 
 Soroban typically reports contract panics as:
@@ -107,6 +137,20 @@ Some failures can look like “unexpected panics” depending on the tooling:
 
 ---
 
+## Unstake / withdraw timing (unbonding period)
+
+`unstake` and `withdraw_stake` are separate entry points with an unbonding delay between them. The following interleavings have defined, documented outcomes:
+
+- **Stake again after `unstake`, before `withdraw_stake`:** the pending withdrawal is **not** reset, cancelled, or corrupted. The unbonding record (amount + unlock ledger) is preserved, and the new stake is tracked independently. `withdraw_stake` still releases only the originally unstaked amount once the delay elapses.
+- **`withdraw_stake` before the delay elapses:** fails cleanly (the unlock ledger has not been reached); no funds are released.
+- **`withdraw_stake` twice:** the second call fails cleanly because the pending withdrawal record is cleared on the first successful withdrawal; no double release.
+- **`unstake` with no active stake:** fails cleanly rather than writing a zero record; no empty/zero withdrawal is persisted.
+- **Withdrawing exactly at the boundary ledger:** succeeds — the delay is satisfied when the current ledger equals the unlock ledger.
+
+Each of these interleavings is covered by a test.
+
+---
+
 ## Troubleshooting tips (fast)
 
 - If you see **`Error(Contract, #3)`**, check that:
@@ -131,3 +175,30 @@ These error codes are defined in `src/lib.rs` under:
 
 Same license as the rest of this repository.
 
+## Error 57 — `StaleProposal`
+
+**Variant**: `ContractError::StaleProposal`
+**Code**: `57`
+**Introduced**: Issue #864 — Governance proposal staleness fix.
+
+### What it means
+
+`execute_admin_proposal` detected that the contract admin has changed since the
+proposal was created. The proposal's `admin_at_creation` field no longer matches
+`DataKey::Admin`, which means executing the proposal would silently revert the
+contract to a superseded admin state.
+
+### Common causes
+
+1. **Direct admin rotation**: `update_admin` was called between proposal creation
+   and execution.
+2. **Timelocked `SetAdmin`**: A `timelock_execute` for a `SetAdmin` action
+   completed while the proposal was open.
+3. **Concurrent proposal race**: A different governance proposal executed first,
+   changing the admin, leaving this proposal stale.
+
+### Resolution
+
+The stale proposal cannot be executed. To change the admin, create a new
+proposal under the current admin. The old stale proposal may be cancelled via
+`cancel_admin_proposal` to clean up storage.

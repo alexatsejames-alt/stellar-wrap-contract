@@ -120,6 +120,7 @@ The following table documents which state-mutating entrypoints honor the pause (
 | `upgrade(new_wasm_hash)` | admin |
 | `renew_all_ttls(user)` | admin |
 | `extend_ttl(user, period)` | anyone |
+| `extend_ttl_batch(user, periods)` | anyone |
 | `set_transfer_fee(token, recipient, amount)` | admin |
 | `clear_transfer_fee()` | admin |
 | `get_transfer_fee()` | — |
@@ -1004,6 +1005,8 @@ storage layout must ship as a numbered migration:
    rollbacks as well.
 ## Documentation
 
+Documentation contributions follow the manual Markdown formatting guidance in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 - [Canonical signed payload encoding](docs/signing-payload.md) — exact field order, XDR encoding rules, and test vectors required by backend signing services (issue #213)
 - [Admin rotation procedure](docs/admin-rotation.md) — safe procedure for rotating the admin address and signing pubkey, including verification, event monitoring, and rollback plan
 - [Timelock controller](docs/timelock.md) — architecture and operator runbook for the admin timelock
@@ -1054,6 +1057,7 @@ commands.
 | Test | `cargo test` or `make test` |
 | Fuzz `mint_wrap` | `make fuzz FUZZ_SECONDS=30` |
 | Release build (WASM) | `cargo build --release --target wasm32-unknown-unknown` or `make build` |
+| Optimized deployment artifact | `make wasm-optimize` (requires Stellar CLI; writes `target/wasm32-unknown-unknown/release/stellar_wrap_contract.optimized.wasm`) |
 | Deploy to testnet | `make deploy-testnet` |
 | Docker reproducible build | `make docker-build` or `docker build -t stellar-wrap-contract .` |
 
@@ -1070,6 +1074,7 @@ All Makefile targets are listed below with descriptions and when to use them.
 | `check-wasm-size` | Measure compiled WASM size against the 200 KB budget (see `SIGNATURE_VERIFICATION_DECISION.md`). | Before merging to verify the contract fits the size budget. |
 | `wasm-size` | Alias for `check-wasm-size`. | Same as `check-wasm-size`. |
 | `soroban-build` | Build via the Stellar CLI (`stellar contract build`). | Alternative to `cargo build --target wasm32-unknown-unknown` when using the Stellar CLI. |
+| `wasm-optimize` | Build the optimized WASM artifact using the Stellar CLI optimizer. Writes to `target/wasm32-unknown-unknown/release/stellar_wrap_contract.optimized.wasm`. Requires Stellar CLI. | Before a production deployment to reduce WASM size. |
 
 #### Test
 
@@ -1281,3 +1286,78 @@ The contract includes a DAO governance module for updating the contract's admin 
 3. **Execute Proposal:** After `duration_seconds` elapses, call `execute_admin_proposal(proposal_id)`. If `votes_for > votes_against`, the contract admin updates to `proposed_admin`.
 4. **Cancel Proposal:** Proposer or current admin can cancel active proposals via `cancel_admin_proposal(caller, proposal_id)`.
 
+## Event catalogue
+
+Every event the contract publishes, pinned by `src/events_test.rs`. The table is the
+contract's event API: a change to any row must be a deliberate change to this file and
+to the tests in the same commit, because `pipeline/` and external indexers decode these
+shapes. `<..>` marks a value that varies per call.
+
+| Emitted by | Topics | Data |
+| --- | --- | --- |
+| `initialize` | `v1 / admin / init` | `Event::AdminInit(admin)` |
+| `pause, unpause` | `v1 / admin / pause` | `Event::AdminPause(paused)` |
+| `update_admin` | `v1 / admin / updated` | `(current_admin, new_admin)` |
+| `set_transfer_fee` | `fee` | `(token, recipient, amount)` |
+| `clear_transfer_fee` | `fee_clr` | `()` |
+| `upgrade` | `upgrade / <version>` | `wasm_hash: BytesN<32>` |
+| `update_admin_pubkey` | `v1 / pubkey / rotate` | `new_pubkey: BytesN<32>` |
+| `set_wrap_metadata` | `v1 / admin / metadata` | `(user, period, description, image_url)` |
+| `mint_wrap` | `v1 / wrap / mint` | `Event::Mint(user, period, archetype)` |
+| `mint_wrap_batch` | `Mint / <user> / <period>` | `MintEventData::Mint(user, period, archetype)` |
+| `expire_wrap` | `expire / <user> / <period>` | `symbol_short!(\` |
+| `transfer_wrap (no fee)` | `transfer / <from> / <to> / <period>` | `()` |
+| `transfer_wrap (fee charged)` | `transfer / <from> / <to> / <period>` | `(token, recipient, amount)` |
+| `backfill_wrap_periods` | `backfill / <user>` | `period_count: u32` |
+| `revoke_wrap` | `revoke / <user> / <period>` | `reason_hash: BytesN<32>` |
+| `burn_wrap` | `burn / <user> / <period>` | `user: Address` |
+| `stake (first stake)` | `stake / <user> / init` | `amount: i128` |
+| `stake (top-up)` | `stake / <user> / add` | `amount: i128` |
+| `unstake` | `unstake / <user>` | `amount: i128` |
+| `withdraw_stake` | `withdraw / <user>` | `amount: i128` |
+| `set_stake_config` | `stake / cfg` | `config: StakeConfig` |
+| `enable_timelock` | `timelock / enabled` | `delay_seconds: u64` |
+| `timelock_schedule` | `timelock / sched` | `(id, eta)` |
+| `timelock_cancel` | `timelock / cancel` | `id: BytesN<32>` |
+| `timelock_execute (upgrade action)` | `upgrade` | `wasm_hash: BytesN<32>` |
+| `timelock_execute (admin action)` | `admin / updated` | `(admin, new_admin)` |
+| `timelock_execute (other action)` | `timelock / exec` | `id: BytesN<32>` |
+| `timelock_sweep_expired` | `timelock / sweep` | `id: BytesN<32>` |
+| `create_admin_proposal` | `gov / propose` | `(proposal_id, proposer, proposed_admin)` |
+| `vote_admin_proposal` | `gov / vote` | `(proposal_id, voter, support)` |
+| `execute_admin_proposal (passed)` | `gov / executed` | `(proposal_id, proposed_admin)` |
+| `execute_admin_proposal (defeated)` | `gov / defeated` | `proposal_id: u64` |
+| `cancel_admin_proposal` | `gov / cancelled` | `(proposal_id, caller)` |
+| `bridge_wrap_out` | `br_out / <user> / <destination_chain>` | `(nonce, recipient_address, period)` |
+| `bridge_wrap_refund` | `br_refund / <sender> / <period>` | `outbound_nonce: u64` |
+| `bridge_wrap_in` | `br_in / <recipient> / <source_chain>` | `(source_nonce, period)` |
+
+Notes for indexers:
+
+- The `v1 / …` triples are the versioned envelope the typed publisher emits; the single-
+  and double-topic shapes are the older ad-hoc tuples that are still on the wire.
+- `mint_wrap` and `mint_wrap_batch` currently publish **different shapes** for the same
+  operation (see the two `mint` rows above). Both are pinned here so the divergence is
+  explicit; unifying them is tracked by the same issue that added this catalogue.
+- `pipeline/src/decoder.ts` decodes storage keys only; it has no event decoding path, so
+  there is nothing in it to check against this catalogue today.
+
+## Handsoff notes
+
+<!-- handsoff-issue-437 -->
+- #437: [Docs] Document `update_admin` function in `lib.rs` with # Examples
+
+<!-- handsoff-issue-440 -->
+- #440: [Docs] Document `balance_of` function in `lib.rs`
+
+<!-- handsoff-issue-442 -->
+- #442: [Docs] Document `get_latest_wrap` function in `lib.rs`
+
+<!-- handsoff-issue-439 -->
+- #439: [Docs] Document `get_wrap` function in `lib.rs`
+
+<!-- handsoff-issue-859 -->
+- #859: [Security] Verify inbound bridge nonces cannot be replayed across source chains
+
+<!-- handsoff-issue-456 -->
+- #456: [Refactor] Use `env.storage().persistent()` optimally for WrapRecords

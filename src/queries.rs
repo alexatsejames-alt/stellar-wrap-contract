@@ -1,3 +1,15 @@
+//! Read-only query helpers for the wrap contract.
+//!
+//! This module centralises the storage reads used by the contract's public
+//! query entry points. It exposes helpers for fetching individual wrap
+//! records, paginated and full listings of a user's wraps, aggregate wrap
+//! summaries, token-style balance/count queries, and contract metadata such
+//! as the transfer-fee configuration, admin address, admin public key, and
+//! overall contract health.
+//!
+//! All functions here are side-effect free: they only read from persistent or
+//! instance storage and never mutate contract state.
+
 use soroban_sdk::{Address, Bytes, BytesN, Env, String, Symbol, Vec};
 
 use crate::{ContractHealth, DataKey, InvariantReport, TransferFeeConfig, WrapRecord, WrapSummary};
@@ -37,6 +49,14 @@ pub(crate) fn total_wrap_count(e: Env) -> u32 {
         .unwrap_or(0)
 }
 
+/// Verifies that `data` matches the SHA-256 hash committed for `(user, period)`.
+///
+/// Looks up `DataKey::Wrap(user, period)` in persistent storage, computes
+/// `SHA-256(data)`, and compares the result to [`WrapRecord::data_hash`].
+/// Returns `true` only when the record exists **and** the hashes are equal.
+/// Returns `false` for a missing record, a tampered payload, or any mismatch.
+///
+/// This function is pure read — it never writes storage and requires no auth.
 pub(crate) fn verify_data(e: Env, user: Address, period: u64, data: Bytes) -> bool {
     let wrap: Option<WrapRecord> = e.storage().persistent().get(&DataKey::Wrap(user, period));
     wrap.is_some_and(|record| {
@@ -130,9 +150,12 @@ pub(crate) fn get_wraps(
 /// without pagination. It is intended for bounded queries of at most
 /// [`MAX_QUERY_RESULTS`] (200) records. Callers with larger datasets should use
 /// the paginated [`get_wraps`] instead to stay within Soroban resource limits.
+///
+/// **Note:** This bound is not yet enforced; the current implementation still
+/// passes `limit = u32::MAX` to [`get_wraps`].
 pub(crate) fn get_all_wraps_for_user(e: Env, user: Address) -> soroban_sdk::Vec<WrapRecord> {
-    // Fetch all wraps up to the maximum query result limit.
-    get_wraps(e, user, 0, MAX_QUERY_RESULTS)
+    // Fetch all wraps by using the maximum possible range.
+    get_wraps(e, user, 0, u32::MAX)
 }
 
 /// Returns an aggregate summary of a user's active wraps across all periods.
@@ -255,14 +278,14 @@ pub(crate) fn total_revoked(e: Env) -> u64 {
 
 pub(crate) fn name(e: Env) -> String {
     e.storage()
-        .temporary()
+        .instance()
         .get(&DataKey::Name)
         .unwrap_or_else(|| String::from_str(&e, "Stellar Wrap Registry"))
 }
 
 pub(crate) fn symbol(e: Env) -> String {
     e.storage()
-        .temporary()
+        .instance()
         .get(&DataKey::Symbol)
         .unwrap_or_else(|| String::from_str(&e, "WRAP"))
 }
@@ -293,7 +316,7 @@ pub(crate) fn schema_version(e: Env) -> u32 {
         .unwrap_or(0)
 }
 
-pub const MAX_QUERY_RESULTS: u32 = 200;
+pub const MAX_QUERY_RESULTS: u32 = 100;
 
 pub(crate) fn check_user_invariants(e: Env, user: Address) -> InvariantReport {
     let wrap_count: u32 = e
@@ -339,14 +362,20 @@ pub(crate) fn check_user_invariants(e: Env, user: Address) -> InvariantReport {
     } else {
         true
     };
+    let balance = balance_of(e.clone(), user.clone()) as u32;
+
     InvariantReport {
+        wrap_count_match_user_periods: wrap_count == user_periods_len,
+        wrap_count_match_wrap_periods: wrap_count == wrap_periods_len,
+        latest_period_matches_max: latest_period == max_user_period,
+        all_user_periods_live,
+        balance_matches_wrap_count: balance == wrap_count,
         wrap_count,
         user_periods_len,
         wrap_periods_len,
-        all_user_periods_live,
         latest_period,
         max_user_period,
         live_wraps_found,
-        balance: wrap_count as i128,
+        balance,
     }
 }

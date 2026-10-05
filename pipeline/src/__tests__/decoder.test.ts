@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { xdr, Address } from '@stellar/stellar-sdk';
-import { decodeDataKey, decodeStorageValue, decodeEventTopic, decodeEventData } from '../decoder';
+import { decodeDataKey, decodeStorageValue, decodeEventTopic, decodeEventData, tryDecodeStorageEntry } from '../decoder';
 import { DataKeyVariant } from '../types';
 
 function makeSingletonKey(name: string): xdr.ScVal {
@@ -215,5 +215,61 @@ describe('decodeEventData', () => {
     const result = decodeEventData(val);
     expect(result.type).toBe('bytes');
     expect(result.value).toBe('01'.repeat(32));
+  });
+});
+
+// ─── Failure-mode tests ─────────────────────────────────────────────────
+
+describe('tryDecodeStorageEntry', () => {
+  it('returns error with reason for an unknown DataKey variant', () => {
+    // A vec key whose first element is a symbol not in DataKeyVariant
+    const keyScVal = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('UnknownVariant')]);
+    const valScVal = xdr.ScVal.scvBool(true);
+    const result = tryDecodeStorageEntry(keyScVal, valScVal, 100, 'persistent');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.reason).toMatch(/Unknown DataKey variant/);
+      expect(result.error.ledger).toBe(100);
+      expect(result.error.keyBase64).toBeTruthy();
+    }
+  });
+
+  it('returns error with reason when value type does not match key (bool for Admin address key)', () => {
+    // Admin expects an address value; give it a bool instead
+    const keyScVal = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Admin')]);
+    const valScVal = xdr.ScVal.scvBool(true);
+    const result = tryDecodeStorageEntry(keyScVal, valScVal, 101, 'persistent');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.reason).toBeTruthy();
+      expect(result.error.ledger).toBe(101);
+    }
+  });
+
+  it('returns error with reason for a Wrap record with missing required fields', () => {
+    // A Wrap value that is an empty map — all required fields absent
+    const userAddr = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+    const keyScVal = xdr.ScVal.scvVec([
+      xdr.ScVal.scvSymbol('Wrap'),
+      Address.fromString(userAddr).toScVal(),
+      xdr.ScVal.scvU64(new xdr.Uint64(1)),
+    ]);
+    const valScVal = xdr.ScVal.scvMap([]); // empty map — missing timestamp, data_hash, etc.
+    const result = tryDecodeStorageEntry(keyScVal, valScVal, 102, 'persistent');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.reason).toMatch(/WrapRecord missing/);
+      expect(result.error.ledger).toBe(102);
+    }
+  });
+
+  it('returns ok for a well-formed Paused entry', () => {
+    const keyScVal = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Paused')]);
+    const valScVal = xdr.ScVal.scvBool(false);
+    const result = tryDecodeStorageEntry(keyScVal, valScVal, 103, 'instance');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.entry.key.variant).toBe(DataKeyVariant.Paused);
+    }
   });
 });
